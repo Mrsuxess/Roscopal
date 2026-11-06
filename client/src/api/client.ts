@@ -5,6 +5,29 @@ export async function fetchHealth() {
   return res.json();
 }
 
+export async function fetchPayPalConfig() {
+  const res = await fetch(`${BASE_URL}/paypal/config`);
+  return res.json();
+}
+
+export async function createCheckoutOrder(circleId: string, cycleId: string, memberId: string, amount: number) {
+  const res = await fetch(`${BASE_URL}/contributions/checkout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ circleId, cycleId, memberId, amount })
+  });
+  return res.json();
+}
+
+export async function captureCheckoutOrder(orderId: string, contributionId?: string) {
+  const res = await fetch(`${BASE_URL}/contributions/capture`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderId, contributionId })
+  });
+  return res.json();
+}
+
 export async function fetchCurrentUser() {
   const res = await fetch(`${BASE_URL}/auth/me`);
   return res.json();

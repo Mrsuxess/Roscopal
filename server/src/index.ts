@@ -6,7 +6,7 @@ import crypto from 'crypto';
 
 dotenv.config();
 
-import { initDatabase, queryAll, queryOne, execute } from './db/database';
+import { initDatabase, queryAll, queryOne, execute, transaction } from './db/database';
 import { seedHeroDemoData } from './db/seed';
 import { recordLedgerEntry, getLedgerEntries, verifyLedgerIntegrity } from './services/auditLedger';
 import { evaluatePayoutSafety } from './engine/policyRules';
@@ -16,7 +16,10 @@ import {
   capturePayPalOrder,
   verifyWebhookSignature,
   getPayPalMode,
-  isPayPalConfigured
+  isPayPalConfigured,
+  getPayPalConfig,
+  getPayoutBatchDetails,
+  processWebhookEvent
 } from './services/paypalService';
 import { processAgentMessage } from './agents/orchestrator';
 import { runAllScenarios } from './tests/runScenarios';
@@ -63,6 +66,19 @@ app.get('/api/health', (req: Request, res: Response) => {
     paypalMode: getPayPalMode(),
     paypalConfigured: isPayPalConfigured(),
     timestamp: new Date().toISOString()
+  });
+});
+
+/**
+ * PayPal Frontend Config Endpoint
+ */
+app.get('/api/paypal/config', (req: Request, res: Response) => {
+  const cfg = getPayPalConfig();
+  res.json({
+    clientId: cfg.clientId || 'sb',
+    currency: 'USD',
+    mode: getPayPalMode(),
+    configured: isPayPalConfigured()
   });
 });
 
@@ -233,20 +249,49 @@ app.get('/api/contributions/:circleId', (req: Request, res: Response) => {
  * Create PayPal Checkout Order
  */
 app.post('/api/contributions/checkout', async (req: Request, res: Response) => {
-  const { circleId, cycleId, memberId, amount } = req.body;
+  const { circleId, cycleId, memberId, amount, currency } = req.body;
 
   const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
   const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
   const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
+  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
 
   if (!circle || !cycle || !member) {
     return res.status(400).json({ error: 'Invalid circle, cycle, or member ID' });
   }
 
+  // Validate amount and currency against circle policy
+  const expectedAmount = policy ? policy.contribution_amount : 100.00;
+  const expectedCurrency = policy ? policy.currency : 'USD';
+
+  if (amount !== undefined && Math.abs(Number(amount) - expectedAmount) > 0.001) {
+    return res.status(400).json({
+      error: `Amount mismatch: Policy requires $${expectedAmount} ${expectedCurrency}, but received $${amount}`
+    });
+  }
+
+  if (currency && currency !== expectedCurrency) {
+    return res.status(400).json({
+      error: `Currency mismatch: Policy requires ${expectedCurrency}, but received ${currency}`
+    });
+  }
+
+  // Check if member already paid for this cycle
+  const existing = queryOne<Contribution>(
+    `SELECT * FROM contributions WHERE cycle_id = ? AND member_id = ? AND status = 'completed'`,
+    [cycleId, memberId]
+  );
+  if (existing) {
+    return res.status(400).json({
+      error: 'Member has already fulfilled contribution for this cycle',
+      existingContributionId: existing.id
+    });
+  }
+
   const customId = `${circleId}:${cycleId}:${memberId}`;
   const orderResult = await createPayPalOrder({
-    amount: amount || 100,
-    currency: 'USD',
+    amount: expectedAmount,
+    currency: expectedCurrency,
     customId,
     description: `ROSCOPAL Contribution - ${circle.name} (Cycle ${cycle.cycle_number})`
   });
@@ -257,15 +302,17 @@ app.post('/api/contributions/checkout', async (req: Request, res: Response) => {
     `INSERT INTO contributions (
       id, circle_id, cycle_id, member_id, amount, currency, status,
       paypal_order_id, payment_method, created_at
-    ) VALUES (?, ?, ?, ?, ?, 'USD', 'pending', ?, 'paypal', ?)`,
-    [contrId, circleId, cycleId, memberId, amount || 100, orderResult.orderId, new Date().toISOString()]
+    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 'paypal', ?)`,
+    [contrId, circleId, cycleId, memberId, expectedAmount, expectedCurrency, orderResult.orderId, new Date().toISOString()]
   );
 
   res.json({
     contributionId: contrId,
     orderId: orderResult.orderId,
     approvalUrl: orderResult.approvalUrl,
-    mode: orderResult.mode
+    mode: orderResult.mode,
+    amount: expectedAmount,
+    currency: expectedCurrency
   });
 });
 
@@ -275,9 +322,13 @@ app.post('/api/contributions/checkout', async (req: Request, res: Response) => {
 app.post('/api/contributions/capture', async (req: Request, res: Response) => {
   const { orderId, contributionId } = req.body;
 
+  if (!orderId && !contributionId) {
+    return res.status(400).json({ error: 'orderId or contributionId is required' });
+  }
+
   const contribution = queryOne<Contribution>(
     `SELECT * FROM contributions WHERE id = ? OR paypal_order_id = ?`,
-    [contributionId, orderId]
+    [contributionId || '', orderId || '']
   );
 
   if (!contribution) {
@@ -285,62 +336,74 @@ app.post('/api/contributions/capture', async (req: Request, res: Response) => {
   }
 
   if (contribution.status === 'completed') {
-    return res.json({ success: true, message: 'Already marked as completed', contribution });
+    return res.json({
+      success: true,
+      message: 'Contribution already confirmed and completed',
+      contribution
+    });
   }
 
   const captureResult = await capturePayPalOrder(orderId || contribution.paypal_order_id || '');
   if (!captureResult.success) {
-    return res.status(400).json({ error: captureResult.error || 'Capture failed' });
+    return res.status(400).json({ error: captureResult.error || 'PayPal capture failed' });
   }
 
   const completedAt = new Date().toISOString();
-  execute(
-    `UPDATE contributions
-     SET status = 'completed', paypal_capture_id = ?, completed_at = ?
-     WHERE id = ?`,
-    [captureResult.captureId, completedAt, contribution.id]
-  );
 
-  // Update collected amount on cycle
-  execute(
-    `UPDATE cycles SET collected_amount = collected_amount + ? WHERE id = ?`,
-    [contribution.amount, contribution.cycle_id]
-  );
+  // Atomic database update & ledger commit
+  const ledger = transaction(() => {
+    execute(
+      `UPDATE contributions
+       SET status = 'completed', paypal_capture_id = ?, completed_at = ?
+       WHERE id = ?`,
+      [captureResult.captureId, completedAt, contribution.id]
+    );
 
-  // Check if target reached
-  const updatedCycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [contribution.cycle_id]);
-  if (updatedCycle && updatedCycle.collected_amount >= updatedCycle.target_pot_amount) {
-    execute(`UPDATE cycles SET status = 'funded' WHERE id = ?`, [updatedCycle.id]);
-  }
+    // Update collected amount on cycle
+    execute(
+      `UPDATE cycles SET collected_amount = collected_amount + ? WHERE id = ?`,
+      [contribution.amount, contribution.cycle_id]
+    );
 
-  // Get member user details for ledger
-  const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [contribution.member_id]);
-  const user = member ? queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
-
-  // Post to Hash-chained Cryptographic Ledger
-  const ledger = recordLedgerEntry({
-    circleId: contribution.circle_id,
-    eventType: 'CONTRIBUTION_RECEIVED',
-    memberName: user?.name || 'Circle Member',
-    recipientName: 'Pot Hold',
-    cycleNumber: updatedCycle?.cycle_number || 1,
-    amount: contribution.amount,
-    currency: contribution.currency,
-    paymentStatus: 'CONFIRMED',
-    paypalRef: captureResult.captureId,
-    auditStatus: 'VERIFIED',
-    metadata: {
-      orderId,
-      mode: captureResult.mode,
-      completedAt
+    // Check if target reached
+    const updatedCycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [contribution.cycle_id]);
+    if (updatedCycle && updatedCycle.collected_amount >= updatedCycle.target_pot_amount) {
+      execute(`UPDATE cycles SET status = 'funded' WHERE id = ?`, [updatedCycle.id]);
     }
+
+    // Get member user details for ledger
+    const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [contribution.member_id]);
+    const user = member ? queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
+
+    // Post to Hash-chained Cryptographic Ledger
+    return recordLedgerEntry({
+      circleId: contribution.circle_id,
+      eventType: 'CONTRIBUTION_RECEIVED',
+      memberName: user?.name || 'Circle Member',
+      recipientName: 'Pot Hold',
+      cycleNumber: updatedCycle?.cycle_number || 1,
+      amount: contribution.amount,
+      currency: contribution.currency,
+      paymentStatus: 'CONFIRMED',
+      paypalRef: captureResult.captureId,
+      auditStatus: 'VERIFIED',
+      metadata: {
+        orderId: orderId || contribution.paypal_order_id,
+        mode: captureResult.mode,
+        completedAt,
+        source: 'PAYPAL_CHECKOUT_CAPTURE'
+      }
+    });
   });
+
+  const updatedCycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [contribution.cycle_id]);
 
   res.json({
     success: true,
     message: 'Contribution confirmed and posted to cryptographic audit ledger',
     captureId: captureResult.captureId,
     ledgerEntryId: ledger.id,
+    collectedAmount: updatedCycle?.collected_amount,
     cycleFunded: updatedCycle?.collected_amount! >= updatedCycle?.target_pot_amount!
   });
 });
@@ -595,7 +658,32 @@ app.post('/api/paypal/webhook', async (req: Request, res: Response) => {
     ]
   );
 
-  res.status(200).json({ status: 'received', eventId });
+  // Actively update state machine (contributions, cycles, ledger, payouts)
+  const processResult = processWebhookEvent(event);
+
+  res.status(200).json({ status: 'received', eventId, processResult });
+});
+
+/**
+ * Reconcile Payout Batch with PayPal
+ */
+app.get('/api/payouts/:circleId/reconcile/:batchId', async (req: Request, res: Response) => {
+  const { batchId } = req.params;
+  const details = await getPayoutBatchDetails(batchId);
+  if (!details) {
+    return res.status(404).json({ error: 'Payout batch not found or unreachable' });
+  }
+
+  const status = details.batch_header?.batch_status;
+  if (status) {
+    if (status === 'SUCCESS') {
+      execute(`UPDATE payouts SET status = 'completed', audit_status = 'VERIFIED' WHERE paypal_payout_batch_id = ?`, [batchId]);
+    } else if (status === 'DENIED' || status === 'CANCELED') {
+      execute(`UPDATE payouts SET status = 'failed', audit_status = 'FLAGGED' WHERE paypal_payout_batch_id = ?`, [batchId]);
+    }
+  }
+
+  res.json({ batchId, details });
 });
 
 /**

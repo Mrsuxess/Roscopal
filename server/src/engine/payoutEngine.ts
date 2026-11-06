@@ -31,6 +31,25 @@ export async function processCyclePayout(cycleId: string, initiatorUserId: strin
   inFlightPayoutLocks.add(cycleId);
 
   try {
+    const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
+    if (!cycle) {
+      return {
+        success: false,
+        message: 'Cycle not found.',
+        safetyCheck: evaluatePayoutSafety(cycleId)
+      };
+    }
+
+    // Step 0: Organizer Authorization Check
+    const circle = queryOne<{ organizer_id: string }>(`SELECT organizer_id FROM circles WHERE id = ?`, [cycle.circle_id]);
+    if (circle && initiatorUserId && circle.organizer_id !== initiatorUserId) {
+      return {
+        success: false,
+        message: 'Unauthorized: Only the circle organizer can execute payouts for this circle.',
+        safetyCheck: evaluatePayoutSafety(cycleId)
+      };
+    }
+
     // Step 1: Deterministic Financial Safety Check
     const safetyCheck = evaluatePayoutSafety(cycleId);
 
@@ -64,8 +83,7 @@ export async function processCyclePayout(cycleId: string, initiatorUserId: strin
       };
     }
 
-    // Step 2: Fetch cycle and recipient details
-    const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId])!;
+    // Step 2: Fetch recipient details
     const recipientMember = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [cycle.recipient_member_id])!;
     const recipientUser = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [recipientMember.user_id])!;
 

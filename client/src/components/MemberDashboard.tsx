@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { User, Circle, CircleMember, Cycle, Contribution } from '../types';
 import { simulateMemberPayment, sendAgentMessage } from '../api/client';
+import { PayPalCheckoutButton } from './PayPalCheckoutButton';
 
 interface MemberDashboardProps {
   currentUser: User | null;
@@ -120,24 +121,26 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
                   Ref: {myCompletedContribution.paypal_capture_id || myCompletedContribution.paypal_order_id} · {myCompletedContribution.completed_at || 'Verified'}
                 </div>
               </div>
-            ) : (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                <button
-                  onClick={handlePayNow}
-                  disabled={paying}
-                  className="flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-[#0070BA] to-[#003087] hover:brightness-110 text-white font-bold text-sm shadow-lg shadow-blue-500/20 transition-all"
-                >
-                  <CreditCard className="w-4 h-4" />
-                  <span>{paying ? 'Authorizing PayPal...' : 'Pay $100 with PayPal'}</span>
-                </button>
-
-                <button
-                  onClick={() => onOpenAssistant(`I need an extension on my contribution for cycle ${currentCycle?.cycle_number}.`)}
-                  className="px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
-                >
-                  Request Grace Extension
-                </button>
+            ) : circle && currentCycle && myMemberRecord ? (
+              <div className="space-y-4">
+                <PayPalCheckoutButton
+                  circleId={circle.id}
+                  cycleId={currentCycle.id}
+                  memberId={myMemberRecord.id}
+                  amount={circle.policy?.contribution_amount || 100}
+                  onSuccess={onRefresh}
+                />
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => onOpenAssistant(`I need an extension on my contribution for cycle ${currentCycle?.cycle_number}.`)}
+                    className="px-4 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-medium transition-all"
+                  >
+                    Need more time? Request Grace Extension
+                  </button>
+                </div>
               </div>
+            ) : (
+              <div className="text-xs text-slate-500">Cycle data loading...</div>
             )}
           </div>
         </div>

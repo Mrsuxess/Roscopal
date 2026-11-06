@@ -8,6 +8,7 @@
     "dev:client": "npm --prefix client run dev",
     "build": "npm --prefix server run build && npm --prefix client run build",
     "test:scenarios": "npm --prefix server run test:scenarios",
-    "test:security": "npm --prefix server run test:security"
+    "test:security": "npm --prefix server run test:security",
+    "test:paypal": "npm --prefix server run test:paypal"
   }
 }
