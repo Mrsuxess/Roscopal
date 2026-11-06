@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 let dbInstance: SqlJsDatabase | null = null;
+let inTransaction = false;
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const DB_FILE = path.join(DATA_DIR, 'roscopal.sqlite');
 
@@ -26,7 +27,7 @@ export async function getDb(): Promise<SqlJsDatabase> {
 }
 
 export function saveDb(): void {
-  if (!dbInstance) return;
+  if (!dbInstance || inTransaction) return;
   try {
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
@@ -58,15 +59,53 @@ export function execute(sql: string, params: any[] = []): { changes: number } {
   const stmt = dbInstance.prepare(sql);
   stmt.run(params);
   stmt.free();
-  saveDb();
+  if (!inTransaction) {
+    saveDb();
+  }
   return { changes: 1 };
 }
 
 export function executeRaw(sql: string): void {
   if (!dbInstance) throw new Error('Database not initialized');
   dbInstance.run(sql);
-  saveDb();
+  if (!inTransaction) {
+    saveDb();
+  }
 }
+
+/**
+ * Execute atomic transaction with BEGIN IMMEDIATE and automatic ROLLBACK on failure
+ */
+export function transaction<T>(fn: () => T): T {
+  if (!dbInstance) throw new Error('Database not initialized');
+  inTransaction = true;
+  dbInstance.run('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    dbInstance.run('COMMIT');
+    inTransaction = false;
+    saveDb();
+    return result;
+  } catch (err) {
+    try {
+      dbInstance.run('ROLLBACK');
+    } catch (rbErr) {
+      // rollback error if already rolled back
+    }
+    inTransaction = false;
+    throw err;
+  }
+}
+
+// Process lifecycle hooks to guarantee persistence
+process.on('SIGINT', () => {
+  saveDb();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  saveDb();
+  process.exit(0);
+});
 
 export async function initDatabase(): Promise<SqlJsDatabase> {
   const db = await getDb();

@@ -75,8 +75,8 @@ export function evaluatePayoutSafety(cycleId: string): PayoutSafetyCheckResult {
     [cycleId]
   );
 
-  const totalCollected = contributions.reduce((sum, c) => sum + Number(c.amount), 0);
-  const targetAmount = Number(cycle.target_pot_amount);
+  const totalCollected = Math.round(contributions.reduce((sum, c) => sum + Number(c.amount), 0) * 100) / 100;
+  const targetAmount = Math.round(Number(cycle.target_pot_amount) * 100) / 100;
 
   // In a standard ROSCA, either everyone contributes (including or excluding recipient depending on pot definition,
   // in our policy: members_count * contribution_amount = target_pot_amount).

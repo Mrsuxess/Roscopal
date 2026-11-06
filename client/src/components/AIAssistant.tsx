@@ -56,6 +56,12 @@ How can I help you today?`,
   const [loading, setLoading] = useState(false);
   const [confirmingCircle, setConfirmingCircle] = useState(false);
 
+  React.useEffect(() => {
+    if (initialPrompt) {
+      setInput(initialPrompt);
+    }
+  }, [initialPrompt]);
+
   const samplePrompts = [
     "Create a circle for 8 people. Everyone contributes $100 monthly, starting Dec 1. Chidi needs the first pot for rent.",
     "I can only pay on the 5th due to paycheck delay.",

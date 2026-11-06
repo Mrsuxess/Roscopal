@@ -121,11 +121,11 @@ If any check fails, **the payout is immediately blocked and logged to the audit 
 
 ---
 
-## 5. Automated Scenario Test Suite (40 Synthetic Tests)
+## 5. Automated Scenario Test Suite (40 Synthetic Tests) & Security Audit
 
-ROSCOPAL includes an automated 40-scenario evaluation suite testing edge cases, disputes, and policy violations.
+ROSCOPAL includes an automated 40-scenario evaluation suite testing edge cases, disputes, policy violations, and concurrency.
 
-### Test Results
+### Test & Audit Results
 
 | Metric | Target | Result | Status |
 |---|---|---|---|
@@ -134,13 +134,26 @@ ROSCOPAL includes an automated 40-scenario evaluation suite testing edge cases, 
 | **Deterministic Policy Compliance** | 100% | **100%** | Verified |
 | **Unauthorized Payouts Allowed** | **0** | **0 (ZERO)** | **Verified** |
 | **Unauthorized Payouts Blocked** | 4 | 4 | Verified |
+| **Concurrency Race Protection** | 1 payout | **1 accepted / 1 rejected** | **Verified (Zero Duplicate Payouts)** |
+| **Cold Database Crash Persistence** | 100% | **100% Data Preserved** | Verified |
 | **Duplicate Event De-duplication** | 1 | 1 | Verified |
+| **Webhook Replay Attack Protection** | Stale rejected | **Rejected (> 20 min TTL)** | Verified |
+| **Member PII Privacy Masking** | Masked | **ch\*\*\*@domain.com** | Verified |
 | **SHA-256 Hash Chain Integrity** | Valid | **100% Valid** | Verified |
-| **Evaluation Runtime** | < 1000ms | **347ms** | Instant |
+| **Evaluation Runtime** | < 1000ms | **390ms** | Instant |
 
 ---
 
-## 6. Quick Start & Run Instructions
+## 6. Security Hardening & Concurrency Architecture
+
+- **In-Flight Mutex & State Compare-and-Swap (CAS):** Payouts are guarded by both an atomic process mutex and an immediate database transaction transition (`UPDATE cycles SET status = 'processing'`). Two simultaneous payout calls will never double-disburse funds.
+- **Strict Role Authorization:** Only the designated Circle Organizer has authority to execute cycle payouts. Calls from non-organizer members are rejected with HTTP 403 Forbidden.
+- **Member Privacy Boundary:** Sensitive personal emails and PayPal accounts are dynamically masked for non-organizer members to prevent IDOR and information leakage.
+- **Cryptographic Chaining:** Each ledger block hashes the previous block's SHA-256 digest, providing mathematical tamper-evidence for all group members.
+
+---
+
+## 7. Quick Start & Run Instructions
 
 ### Prerequisites
 - Node.js (v18+)

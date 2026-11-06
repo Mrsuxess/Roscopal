@@ -34,6 +34,21 @@ export async function fetchMembers(circleId: string) {
   return res.json();
 }
 
+export async function inviteMember(params: {
+  circleId: string;
+  name: string;
+  email: string;
+  paypalEmail?: string;
+  location?: string;
+}) {
+  const res = await fetch(`${BASE_URL}/members/invite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  return res.json();
+}
+
 export async function fetchCycles(circleId: string) {
   const res = await fetch(`${BASE_URL}/cycles/${circleId}`);
   return res.json();

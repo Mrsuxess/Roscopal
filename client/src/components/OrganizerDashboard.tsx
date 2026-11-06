@@ -14,7 +14,10 @@ import {
   ChevronRight,
   TrendingUp,
   CreditCard,
-  Building
+  Building,
+  UserPlus,
+  Copy,
+  Check
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Circle, CircleMember, Cycle, Contribution, SafetyCheckResult } from '../types';
@@ -23,7 +26,8 @@ import {
   executePayout, 
   simulateMemberPayment, 
   fetchLedger,
-  fetchContributions 
+  fetchContributions,
+  inviteMember 
 } from '../api/client';
 
 interface OrganizerDashboardProps {
@@ -49,6 +53,14 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
   const [payoutLoading, setPayoutLoading] = useState(false);
   const [payoutResult, setPayoutResult] = useState<any | null>(null);
   const [simulatingMember, setSimulatingMember] = useState<string | null>(null);
+
+  // Invite modal state
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteName, setInviteName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteLocation, setInviteLocation] = useState('');
+  const [inviting, setInviting] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const loadSafety = async () => {
     if (!currentCycle) return;
@@ -112,6 +124,36 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
     contributions.filter(c => c.status === 'completed' && c.cycle_id === currentCycle?.id).map(c => c.member_id)
   );
 
+  const handleSendInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!circle || !inviteName || !inviteEmail) return;
+    setInviting(true);
+    try {
+      await inviteMember({
+        circleId: circle.id,
+        name: inviteName,
+        email: inviteEmail,
+        location: inviteLocation || 'Remote'
+      });
+      setShowInviteModal(false);
+      setInviteName('');
+      setInviteEmail('');
+      setInviteLocation('');
+      await onRefresh();
+    } catch (err: any) {
+      alert(`Invite failed: ${err.message || 'Error sending invite'}`);
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const copyInviteLink = () => {
+    const link = `${window.location.origin}/join/${circle?.id || 'circle-diaspora-8'}`;
+    navigator.clipboard.writeText(link);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
   return (
     <div className="space-y-6">
       {/* Circle Banner */}
@@ -133,6 +175,14 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-all shadow-md"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Invite Member</span>
+            </button>
+
             <button
               onClick={onOpenLedger}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold transition-all"
@@ -381,6 +431,103 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
 • Next Scheduled Action: Payout execution upon final member contribution verification`}
         </div>
       </div>
+
+      {/* Member Invitation Modal */}
+      {showInviteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-bold text-white text-base">Invite Member to Circle</h3>
+              </div>
+              <button
+                onClick={() => setShowInviteModal(false)}
+                className="text-slate-400 hover:text-white text-sm font-semibold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Shareable Link Box */}
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
+              <span className="text-[10px] uppercase font-bold text-slate-400">Shareable Invitation Link</span>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={`${window.location.origin}/join/${circle?.id || 'circle-diaspora-8'}`}
+                  className="flex-1 bg-transparent text-xs font-mono text-slate-300 outline-none truncate"
+                />
+                <button
+                  onClick={copyInviteLink}
+                  className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-semibold"
+                >
+                  {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedLink ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="text-center text-[11px] text-slate-500 uppercase font-bold tracking-wider">
+              Or Directly Add Member
+            </div>
+
+            <form onSubmit={handleSendInvite} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Samuel Adeyemi"
+                  value={inviteName}
+                  onChange={(e) => setInviteName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 mb-1">Email / PayPal Email</label>
+                <input
+                  type="email"
+                  required
+                  placeholder="samuel@example.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 mb-1">City / Country</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Atlanta, USA"
+                  value={inviteLocation}
+                  onChange={(e) => setInviteLocation(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowInviteModal(false)}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={inviting}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-all"
+                >
+                  {inviting ? 'Inviting...' : 'Add to Circle'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

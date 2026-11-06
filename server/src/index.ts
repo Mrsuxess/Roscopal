@@ -25,8 +25,29 @@ import { User, Circle, CirclePolicy, Cycle, CircleMember, Contribution } from '.
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
-app.use(express.json());
+// Security & Hardening Middleware
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+app.use(express.json({ limit: '1mb' }));
+
+// Helper to mask sensitive PII for non-organizer members
+function maskEmail(email?: string): string {
+  if (!email || !email.includes('@')) return '***@***.***';
+  const [local, domain] = email.split('@');
+  const visible = local.length > 2 ? local.slice(0, 2) : local.slice(0, 1);
+  return `${visible}***@${domain}`;
+}
 
 // Current simulated session user (default Ada - Organizer)
 let currentUserId = 'usr-ada';
@@ -113,6 +134,9 @@ app.get('/api/circles/:id', (req: Request, res: Response) => {
  * Members & Cycle info
  */
 app.get('/api/members/:circleId', (req: Request, res: Response) => {
+  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [req.params.circleId]);
+  const isOrganizer = circle && circle.organizer_id === currentUserId;
+
   const members = queryAll<any>(
     `SELECT cm.*, u.name, u.email, u.paypal_email, u.location, u.role
      FROM circle_members cm
@@ -121,7 +145,59 @@ app.get('/api/members/:circleId', (req: Request, res: Response) => {
      ORDER BY cm.turn_order ASC`,
     [req.params.circleId]
   );
-  res.json({ members });
+
+  // Privacy boundary: non-organizers cannot see other members' full emails or sensitive paypal emails
+  const sanitized = members.map(m => {
+    if (isOrganizer || m.user_id === currentUserId) {
+      return m;
+    }
+    return {
+      ...m,
+      email: maskEmail(m.email),
+      paypal_email: maskEmail(m.paypal_email)
+    };
+  });
+
+  res.json({ members: sanitized });
+});
+
+app.post('/api/members/invite', (req: Request, res: Response) => {
+  const { circleId, name, email, paypalEmail, location } = req.body;
+  if (!circleId || !name || !email) {
+    return res.status(400).json({ error: 'Missing required invitation parameters: circleId, name, email' });
+  }
+
+  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
+  if (!circle) return res.status(404).json({ error: 'Circle not found' });
+  if (circle.organizer_id !== currentUserId) {
+    return res.status(403).json({ error: 'Forbidden: Only the Circle Organizer can invite members.' });
+  }
+
+  const existingMembers = queryAll<CircleMember>(`SELECT * FROM circle_members WHERE circle_id = ?`, [circleId]);
+  const turnOrder = existingMembers.length + 1;
+
+  const newUserId = 'usr-' + crypto.randomUUID().slice(0, 8);
+  const newMemberId = 'mem-' + crypto.randomUUID().slice(0, 8);
+  const now = new Date().toISOString();
+
+  execute(
+    `INSERT INTO users (id, name, email, role, paypal_email, location, created_at)
+     VALUES (?, ?, ?, 'member', ?, ?, ?)`,
+    [newUserId, name, email, paypalEmail || email, location || 'Global', now]
+  );
+
+  execute(
+    `INSERT INTO circle_members (id, circle_id, user_id, turn_order, status, joined_at)
+     VALUES (?, ?, ?, ?, 'active', ?)`,
+    [newMemberId, circleId, newUserId, turnOrder, now]
+  );
+
+  res.json({
+    success: true,
+    message: `Member ${name} invited and added to Circle at Turn #${turnOrder}.`,
+    memberId: newMemberId,
+    turnOrder
+  });
 });
 
 app.get('/api/cycles/:circleId', (req: Request, res: Response) => {
@@ -347,7 +423,22 @@ app.get('/api/payouts/safety-check/:cycleId', (req: Request, res: Response) => {
 
 app.post('/api/payouts/execute', async (req: Request, res: Response) => {
   const { cycleId } = req.body;
-  if (!cycleId) return res.status(400).json({ error: 'cycleId is required' });
+  if (!cycleId || typeof cycleId !== 'string') {
+    return res.status(400).json({ error: 'Valid cycleId string is required' });
+  }
+
+  // Authorization Boundary: verify caller is Organizer of this circle
+  const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
+  if (!cycle) return res.status(404).json({ error: 'Cycle not found' });
+
+  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [cycle.circle_id]);
+  if (!circle) return res.status(404).json({ error: 'Circle not found' });
+
+  if (circle.organizer_id !== currentUserId) {
+    return res.status(403).json({
+      error: 'Forbidden: Only the Circle Organizer has authority to trigger cycle payouts.'
+    });
+  }
 
   const result = await processCyclePayout(cycleId, currentUserId);
   if (!result.success) {
@@ -374,10 +465,14 @@ app.get('/api/ledger/:circleId/verify', (req: Request, res: Response) => {
  */
 app.post('/api/ai/chat', async (req: Request, res: Response) => {
   const { content, circleId } = req.body;
+  if (!content || typeof content !== 'string') {
+    return res.status(400).json({ error: 'Message content is required' });
+  }
+
   const activeCircleId = circleId || 'circle-diaspora-8';
 
   const response = await processAgentMessage({
-    content: content || '',
+    content: content.trim(),
     circleId: activeCircleId,
     userId: currentUserId
   });
@@ -398,6 +493,9 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
  */
 app.post('/api/ai/confirm-circle', (req: Request, res: Response) => {
   const { policy, circleName } = req.body;
+  if (!policy || typeof policy !== 'object') {
+    return res.status(400).json({ error: 'Valid policy object is required' });
+  }
 
   const circleId = 'circle-' + crypto.randomUUID().slice(0, 8);
   const name = circleName || policy.name || 'Global Savings Circle';
@@ -451,12 +549,25 @@ app.post('/api/ai/confirm-circle', (req: Request, res: Response) => {
 });
 
 /**
- * PayPal Webhook Receiver
+ * PayPal Webhook Receiver with Replay Protection & Signature Verification
  */
 app.post('/api/paypal/webhook', async (req: Request, res: Response) => {
   const event = req.body;
+  if (!event || typeof event !== 'object') {
+    return res.status(400).json({ error: 'Invalid webhook payload' });
+  }
+
   const eventId = event.id || 'WH-' + crypto.randomUUID();
   const eventType = event.event_type || 'UNKNOWN';
+
+  // Check event timestamp for replay protection (max 20 mins)
+  if (event.create_time) {
+    const eventTime = new Date(event.create_time).getTime();
+    const now = Date.now();
+    if (!isNaN(eventTime) && now - eventTime > 20 * 60 * 1000) {
+      return res.status(400).json({ error: 'Webhook event expired (replay attack protection)' });
+    }
+  }
 
   // Check signature
   const verified = await verifyWebhookSignature(req.headers as any, event);
@@ -468,7 +579,7 @@ app.post('/api/paypal/webhook', async (req: Request, res: Response) => {
   // Idempotency check: prevent duplicate event processing
   const existing = queryOne(`SELECT * FROM webhook_events WHERE event_id = ?`, [eventId]);
   if (existing) {
-    return res.status(200).json({ status: 'ignored_duplicate' });
+    return res.status(200).json({ status: 'ignored_duplicate', message: 'Event already processed' });
   }
 
   execute(
@@ -484,7 +595,7 @@ app.post('/api/paypal/webhook', async (req: Request, res: Response) => {
     ]
   );
 
-  res.status(200).json({ status: 'received' });
+  res.status(200).json({ status: 'received', eventId });
 });
 
 /**
@@ -513,6 +624,15 @@ app.get('*', (req: Request, res: Response) => {
     if (err) {
       res.status(200).send('ROSCOPAL Backend API is running. Client build in progress.');
     }
+  });
+});
+
+// Sanitized Production Error Handler
+app.use((err: any, req: Request, res: Response, next: any) => {
+  console.error('API Error:', err);
+  res.status(err.status || 500).json({
+    error: err.name || 'InternalServerError',
+    message: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred.' : (err.message || 'Server error')
   });
 });
 

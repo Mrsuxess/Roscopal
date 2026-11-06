@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: roscopal
+    env: docker
+    plan: free
+    branch: main
+    dockerfilePath: Dockerfile
+    healthCheckPath: /api/health
+    disk:
+      name: roscopal-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: NODE_ENV
+        value: production
+      - key: PAYPAL_MODE
+        value: demo_simulator
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
