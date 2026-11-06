@@ -288,32 +288,40 @@ app.post('/api/contributions/checkout', async (req: Request, res: Response) => {
     });
   }
 
-  const customId = `${circleId}:${cycleId}:${memberId}`;
-  const orderResult = await createPayPalOrder({
-    amount: expectedAmount,
-    currency: expectedCurrency,
-    customId,
-    description: `ROSCOPAL Contribution - ${circle.name} (Cycle ${cycle.cycle_number})`
-  });
+  try {
+    const customId = `${circleId}:${cycleId}:${memberId}`;
+    const orderResult = await createPayPalOrder({
+      amount: expectedAmount,
+      currency: expectedCurrency,
+      customId,
+      description: `ROSCOPAL Contribution - ${circle.name} (Cycle ${cycle.cycle_number})`
+    });
 
-  // Create pending contribution record
-  const contrId = 'CONTR-' + crypto.randomUUID().slice(0, 8).toUpperCase();
-  execute(
-    `INSERT INTO contributions (
-      id, circle_id, cycle_id, member_id, amount, currency, status,
-      paypal_order_id, payment_method, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 'paypal', ?)`,
-    [contrId, circleId, cycleId, memberId, expectedAmount, expectedCurrency, orderResult.orderId, new Date().toISOString()]
-  );
+    // Create pending contribution record
+    const contrId = 'CONTR-' + crypto.randomUUID().slice(0, 8).toUpperCase();
+    execute(
+      `INSERT INTO contributions (
+        id, circle_id, cycle_id, member_id, amount, currency, status,
+        paypal_order_id, payment_method, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 'paypal', ?)`,
+      [contrId, circleId, cycleId, memberId, expectedAmount, expectedCurrency, orderResult.orderId, new Date().toISOString()]
+    );
 
-  res.json({
-    contributionId: contrId,
-    orderId: orderResult.orderId,
-    approvalUrl: orderResult.approvalUrl,
-    mode: orderResult.mode,
-    amount: expectedAmount,
-    currency: expectedCurrency
-  });
+    res.json({
+      contributionId: contrId,
+      orderId: orderResult.orderId,
+      approvalUrl: orderResult.approvalUrl,
+      mode: orderResult.mode,
+      amount: expectedAmount,
+      currency: expectedCurrency
+    });
+  } catch (err: any) {
+    console.error('PayPal Order creation error:', err.message);
+    res.status(502).json({
+      error: err.message || 'PayPal order creation failed',
+      mode: getPayPalMode()
+    });
+  }
 });
 
 /**

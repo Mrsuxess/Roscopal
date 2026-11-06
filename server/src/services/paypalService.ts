@@ -1,4 +1,7 @@
 import crypto from 'crypto';
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { queryOne, execute, transaction } from '../db/database';
 import { recordLedgerEntry } from './auditLedger';
 import { Contribution, Cycle, CircleMember, User, CirclePolicy } from '../types';
@@ -8,6 +11,15 @@ export interface PayPalConfig {
   clientSecret: string;
   baseUrl: string;
   webhookId?: string;
+}
+
+export function getConfig(): PayPalConfig {
+  return {
+    clientId: process.env.PAYPAL_CLIENT_ID || '',
+    clientSecret: process.env.PAYPAL_CLIENT_SECRET || '',
+    baseUrl: process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com',
+    webhookId: process.env.PAYPAL_WEBHOOK_ID || ''
+  };
 }
 
 export interface CreateOrderParams {
@@ -43,32 +55,28 @@ export interface WebhookProcessResult {
   referenceId?: string;
 }
 
-const config: PayPalConfig = {
-  clientId: process.env.PAYPAL_CLIENT_ID || '',
-  clientSecret: process.env.PAYPAL_CLIENT_SECRET || '',
-  baseUrl: process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com',
-  webhookId: process.env.PAYPAL_WEBHOOK_ID || ''
-};
-
 export function getPayPalConfig(): {
   mode: 'LIVE_SANDBOX' | 'SIMULATED_SANDBOX';
   clientId: string;
   currency: string;
 } {
   const configured = isPayPalConfigured();
+  const cfg = getConfig();
   return {
     mode: configured ? 'LIVE_SANDBOX' : 'SIMULATED_SANDBOX',
-    clientId: configured ? config.clientId : 'sb',
+    clientId: configured ? cfg.clientId : 'sb',
     currency: 'USD'
   };
 }
 
 export function isPayPalConfigured(): boolean {
+  const cfg = getConfig();
   return !!(
-    config.clientId &&
-    config.clientSecret &&
-    config.clientId !== 'your_sandbox_client_id' &&
-    config.clientId !== 'your_paypal_sandbox_client_id'
+    cfg.clientId &&
+    cfg.clientSecret &&
+    cfg.clientId !== 'your_sandbox_client_id' &&
+    cfg.clientId !== 'your_paypal_sandbox_client_id' &&
+    cfg.clientSecret !== 'your_paypal_sandbox_client_secret'
   );
 }
 
@@ -81,10 +89,11 @@ export function getPayPalMode(): 'LIVE_SANDBOX' | 'SIMULATED_SANDBOX' {
  */
 export async function getPayPalAccessToken(): Promise<string | null> {
   if (!isPayPalConfigured()) return null;
+  const cfg = getConfig();
 
   try {
-    const auth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
-    const response = await fetch(`${config.baseUrl}/v1/oauth2/token`, {
+    const auth = Buffer.from(`${cfg.clientId}:${cfg.clientSecret}`).toString('base64');
+    const response = await fetch(`${cfg.baseUrl}/v1/oauth2/token`, {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${auth}`,
@@ -94,7 +103,8 @@ export async function getPayPalAccessToken(): Promise<string | null> {
     });
 
     if (!response.ok) {
-      console.error('PayPal OAuth error:', await response.text());
+      const errText = await response.text();
+      console.error('PayPal OAuth error:', errText);
       return null;
     }
 
@@ -115,58 +125,58 @@ export async function createPayPalOrder(params: CreateOrderParams): Promise<{
   approvalUrl: string;
   mode: 'LIVE_SANDBOX' | 'SIMULATED_SANDBOX';
 }> {
-  const token = await getPayPalAccessToken();
+  if (isPayPalConfigured()) {
+    const token = await getPayPalAccessToken();
+    if (!token) {
+      throw new Error('PayPal authentication failed: unable to obtain OAuth access token from sandbox API. Verify PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET.');
+    }
 
-  if (token) {
-    try {
-      const response = await fetch(`${config.baseUrl}/v2/checkout/orders`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          intent: 'CAPTURE',
-          purchase_units: [
-            {
-              reference_id: params.customId,
-              description: params.description,
-              custom_id: params.customId,
-              amount: {
-                currency_code: params.currency || 'USD',
-                value: params.amount.toFixed(2)
-              }
+    const cfg = getConfig();
+    const response = await fetch(`${cfg.baseUrl}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        intent: 'CAPTURE',
+        purchase_units: [
+          {
+            reference_id: params.customId,
+            description: params.description,
+            custom_id: params.customId,
+            amount: {
+              currency_code: params.currency || 'USD',
+              value: params.amount.toFixed(2)
             }
-          ],
-          application_context: {
-            brand_name: 'ROSCOPAL',
-            landing_page: 'NO_PREFERENCE',
-            user_action: 'PAY_NOW',
-            return_url: params.returnUrl || 'http://localhost:5173/payment-success',
-            cancel_url: params.cancelUrl || 'http://localhost:5173/payment-cancel'
           }
-        })
-      });
+        ],
+        application_context: {
+          brand_name: 'ROSCOPAL',
+          landing_page: 'NO_PREFERENCE',
+          user_action: 'PAY_NOW',
+          return_url: params.returnUrl || 'http://localhost:5173/payment-success',
+          cancel_url: params.cancelUrl || 'http://localhost:5173/payment-cancel'
+        }
+      })
+    });
 
-      if (response.ok) {
-        const data: any = await response.json();
-        const approvalLink = data.links?.find((l: any) => l.rel === 'approve')?.href || '';
-        return {
-          orderId: data.id,
-          status: data.status,
-          approvalUrl: approvalLink,
-          mode: 'LIVE_SANDBOX'
-        };
-      } else {
-        const errorText = await response.text();
-        console.warn('PayPal live order rejection:', errorText);
-      }
-    } catch (err) {
-      console.warn('Live PayPal order creation failed, falling back to sandbox simulator:', err);
+    if (response.ok) {
+      const data: any = await response.json();
+      const approvalLink = data.links?.find((l: any) => l.rel === 'approve')?.href || '';
+      return {
+        orderId: data.id,
+        status: data.status,
+        approvalUrl: approvalLink,
+        mode: 'LIVE_SANDBOX'
+      };
+    } else {
+      const errorText = await response.text();
+      throw new Error(`PayPal live order creation rejected (${response.status}): ${errorText}`);
     }
   }
 
-  // Authentic Sandbox Simulator Fallback
+  // Authentic Sandbox Simulator Fallback (only when no credentials configured)
   const simulatedId = 'ORDER-PP-SANDBOX-' + crypto.randomUUID().slice(0, 8).toUpperCase();
   return {
     orderId: simulatedId,
@@ -211,8 +221,9 @@ export async function capturePayPalOrder(orderId: string): Promise<{
     };
   }
 
+  const cfg = getConfig();
   try {
-    const response = await fetch(`${config.baseUrl}/v2/checkout/orders/${orderId}/capture`, {
+    const response = await fetch(`${cfg.baseUrl}/v2/checkout/orders/${orderId}/capture`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -292,8 +303,9 @@ export async function executePayPalPayout(params: PayoutParams): Promise<PayoutR
   const token = await getPayPalAccessToken();
 
   if (token) {
+    const cfg = getConfig();
     try {
-      const response = await fetch(`${config.baseUrl}/v1/payments/payouts`, {
+      const response = await fetch(`${cfg.baseUrl}/v1/payments/payouts`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -378,9 +390,10 @@ export async function getPayoutBatchDetails(batchId: string): Promise<any> {
 
   const token = await getPayPalAccessToken();
   if (!token) return null;
+  const cfg = getConfig();
 
   try {
-    const response = await fetch(`${config.baseUrl}/v1/payments/payouts/${batchId}`, {
+    const response = await fetch(`${cfg.baseUrl}/v1/payments/payouts/${batchId}`, {
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
@@ -410,15 +423,16 @@ export async function verifyWebhookSignature(
     return true;
   }
 
+  const cfg = getConfig();
   const token = await getPayPalAccessToken();
-  if (!token || !config.webhookId) {
+  if (!token || !cfg.webhookId) {
     // If webhook ID is not configured yet in .env, log and reject unauthenticated calls
     console.warn('PayPal Webhook verification failed: PAYPAL_WEBHOOK_ID missing in configuration');
     return false;
   }
 
   try {
-    const response = await fetch(`${config.baseUrl}/v1/notifications/verify-webhook-signature`, {
+    const response = await fetch(`${cfg.baseUrl}/v1/notifications/verify-webhook-signature`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -430,7 +444,7 @@ export async function verifyWebhookSignature(
         transmission_id: headers['paypal-transmission-id'],
         transmission_sig: headers['paypal-transmission-sig'],
         transmission_time: headers['paypal-transmission-time'],
-        webhook_id: config.webhookId,
+        webhook_id: cfg.webhookId,
         webhook_event: body
       })
     });
