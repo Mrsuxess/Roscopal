@@ -14,7 +14,7 @@ import { User, Circle, CircleMember, Cycle, Contribution } from '../types';
 import { simulateMemberPayment, sendAgentMessage } from '../api/client';
 
 interface MemberDashboardProps {
-  currentUser: User;
+  currentUser: User | null;
   circle: Circle | null;
   members: CircleMember[];
   cycles: Cycle[];
@@ -33,7 +33,7 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
   onOpenAssistant
 }) => {
   const currentCycle = cycles.find(c => c.cycle_number === (circle?.current_cycle_number || 1)) || cycles[0];
-  const myMemberRecord = members.find(m => m.user_id === currentUser.id);
+  const myMemberRecord = members.find(m => m.user_id === currentUser?.id);
 
   // Check if current user has paid for current cycle
   const myCompletedContribution = contributions.find(
@@ -65,13 +65,13 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                 Circle Member Portal
               </span>
-              <span className="text-xs text-slate-400 font-mono">Location: {currentUser.location}</span>
+              <span className="text-xs text-slate-400 font-mono">Location: {currentUser?.location || 'Remote'}</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">
-              Welcome, {currentUser.name}
+              Welcome, {currentUser?.name || 'Member'}
             </h1>
             <p className="text-sm text-slate-400 mt-1">
-              Member of {circle?.name || 'Global Diaspora Heritage Circle'} · PayPal: <span className="font-mono text-slate-300">{currentUser.paypal_email}</span>
+              Member of {circle?.name || 'Global Diaspora Heritage Circle'} · PayPal: <span className="font-mono text-slate-300">{currentUser?.paypal_email || 'Not configured'}</span>
             </p>
           </div>
 

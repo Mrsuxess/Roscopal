@@ -109,7 +109,19 @@ export const App: React.FC = () => {
         )}
 
         {currentTab === 'dashboard' && (
-          currentUser?.role === 'organizer' ? (
+          !currentUser ? (
+            <div className="flex flex-col items-center justify-center py-24 space-y-4">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-500 to-cyan-500 p-0.5 animate-pulse">
+                <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+                  <span className="text-emerald-400 font-black text-xl">R</span>
+                </div>
+              </div>
+              <div className="text-center">
+                <p className="text-sm font-bold text-white">Loading ROSCOPAL Dashboard</p>
+                <p className="text-xs text-slate-400">Verifying session and deterministic ledger state...</p>
+              </div>
+            </div>
+          ) : currentUser.role === 'organizer' ? (
             <OrganizerDashboard
               circle={circle}
               members={members}
@@ -120,7 +132,7 @@ export const App: React.FC = () => {
             />
           ) : (
             <MemberDashboard
-              currentUser={currentUser!}
+              currentUser={currentUser}
               circle={circle}
               members={members}
               cycles={cycles}
