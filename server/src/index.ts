@@ -9,7 +9,7 @@ dotenv.config();
 import { initDatabase, queryAll, queryOne, execute, transaction } from './db/database';
 import { seedHeroDemoData } from './db/seed';
 import { recordLedgerEntry, getLedgerEntries, verifyLedgerIntegrity } from './services/auditLedger';
-import { evaluatePayoutSafety } from './engine/policyRules';
+import { evaluatePayoutSafety, evaluateExtensionRequest } from './engine/policyRules';
 import { processCyclePayout } from './engine/payoutEngine';
 import {
   createPayPalOrder,
@@ -26,9 +26,19 @@ import { runAllScenarios } from './tests/runScenarios';
 import { User, Circle, CirclePolicy, Cycle, CircleMember, Contribution } from './types';
 import { registerUser, loginUser, validateSession, deleteSession } from './services/authService';
 import { createCircleWithWizard, getUserCircles, getInvitationDetails, joinCircleWithInvite } from './services/circleService';
+import { formatCurrency, isPayPalSupported } from './utils/currency';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+function getAuthUser(req: Request): User | null {
+  const token = req.headers.authorization?.replace('Bearer ', '') || (req.headers['x-session-token'] as string);
+  if (token) {
+    const sessionUser = validateSession(token);
+    if (sessionUser) return sessionUser;
+  }
+  return queryOne<User>(`SELECT * FROM users WHERE id = ?`, [currentUserId]) || null;
+}
 
 // Security & Hardening Middleware
 app.use((req, res, next) => {
@@ -240,6 +250,13 @@ app.get('/api/circles/:id', (req: Request, res: Response) => {
     }
   }
 
+  const memberCountResult = queryOne<any>(
+    `SELECT COUNT(*) as cnt FROM circle_members WHERE circle_id = ? AND status != 'departed'`,
+    [circle.id]
+  );
+  circle.policy = policy || undefined;
+  circle.membersCount = memberCountResult ? memberCountResult.cnt : 1;
+
   res.json({
     circle,
     policy,
@@ -322,8 +339,8 @@ app.get('/api/cycles/:circleId', (req: Request, res: Response) => {
   const cycles = queryAll<Cycle>(
     `SELECT c.*, u.name as recipient_name, u.paypal_email as recipient_email
      FROM cycles c
-     JOIN circle_members cm ON c.recipient_member_id = cm.id
-     JOIN users u ON cm.user_id = u.id
+     LEFT JOIN circle_members cm ON c.recipient_member_id = cm.id
+     LEFT JOIN users u ON cm.user_id = u.id
      WHERE c.circle_id = ?
      ORDER BY c.cycle_number ASC`,
     [req.params.circleId]
@@ -362,9 +379,26 @@ app.post('/api/contributions/checkout', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid circle, cycle, or member ID' });
   }
 
+  if (cycle.circle_id !== circleId) {
+    return res.status(400).json({ error: 'Cycle does not belong to specified circle' });
+  }
+
+  if (member.circle_id !== circleId) {
+    return res.status(400).json({ error: 'Member does not belong to specified circle' });
+  }
+
+  // Authorization check
+  const authUser = getAuthUser(req);
+  if (authUser) {
+    const isOrganizer = circle.organizer_id === authUser.id;
+    if (!isOrganizer && member.user_id !== authUser.id) {
+      return res.status(403).json({ error: 'Unauthorized: You cannot pay contributions on behalf of other circle members' });
+    }
+  }
+
   // Validate amount and currency against circle policy
-  const expectedAmount = policy ? policy.contribution_amount : 100.00;
-  const expectedCurrency = policy ? policy.currency : 'USD';
+  const expectedAmount = policy ? Number(policy.contribution_amount) : 100.00;
+  const expectedCurrency = (policy ? policy.currency : 'USD').toUpperCase();
 
   if (amount !== undefined && Math.abs(Number(amount) - expectedAmount) > 0.001) {
     return res.status(400).json({
@@ -372,9 +406,15 @@ app.post('/api/contributions/checkout', async (req: Request, res: Response) => {
     });
   }
 
-  if (currency && currency !== expectedCurrency) {
+  if (currency && currency.toUpperCase() !== expectedCurrency) {
     return res.status(400).json({
       error: `Currency mismatch: Policy requires ${expectedCurrency}, but received ${currency}`
+    });
+  }
+
+  if (!isPayPalSupported(expectedCurrency)) {
+    return res.status(400).json({
+      error: `PayPal does not support direct checkout in ${expectedCurrency}. Please use a PayPal-supported currency (USD, EUR, GBP) or arrange local circle settlement.`
     });
   }
 
@@ -527,6 +567,7 @@ app.post('/api/contributions/simulate-member-payment', async (req: Request, res:
   const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
   const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
   const user = member ? queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
+  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
 
   if (!cycle || !member) {
     return res.status(404).json({ error: 'Cycle or member not found' });
@@ -541,6 +582,9 @@ app.post('/api/contributions/simulate-member-payment', async (req: Request, res:
     return res.json({ message: 'Member already contributed', contribution: existing });
   }
 
+  const amount = policy ? Number(policy.contribution_amount) : 100.00;
+  const currency = policy ? policy.currency : 'USD';
+
   const contrId = 'CONTR-SIM-' + crypto.randomUUID().slice(0, 6).toUpperCase();
   const simOrder = 'ORDER-PP-SIM-' + crypto.randomUUID().slice(0, 6).toUpperCase();
   const simCap = 'CAP-PP-SIM-' + crypto.randomUUID().slice(0, 6).toUpperCase();
@@ -550,11 +594,11 @@ app.post('/api/contributions/simulate-member-payment', async (req: Request, res:
     `INSERT INTO contributions (
       id, circle_id, cycle_id, member_id, amount, currency, status,
       paypal_order_id, paypal_capture_id, payment_method, completed_at, created_at
-    ) VALUES (?, ?, ?, ?, 100, 'USD', 'completed', ?, ?, 'paypal_sandbox', ?, ?)`,
-    [contrId, circleId, cycleId, memberId, simOrder, simCap, now, now]
+    ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, 'paypal_sandbox', ?, ?)`,
+    [contrId, circleId, cycleId, memberId, amount, currency, simOrder, simCap, now, now]
   );
 
-  execute(`UPDATE cycles SET collected_amount = collected_amount + 100 WHERE id = ?`, [cycleId]);
+  execute(`UPDATE cycles SET collected_amount = collected_amount + ? WHERE id = ?`, [amount, cycleId]);
 
   const updatedCycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
   if (updatedCycle && updatedCycle.collected_amount >= updatedCycle.target_pot_amount) {
@@ -568,19 +612,21 @@ app.post('/api/contributions/simulate-member-payment', async (req: Request, res:
     memberName: user?.name || 'Member',
     recipientName: 'Pot Hold',
     cycleNumber: cycle.cycle_number,
-    amount: 100,
+    amount,
+    currency,
     paymentStatus: 'CONFIRMED',
     paypalRef: simCap,
     auditStatus: 'VERIFIED',
     metadata: {
-      simulated: true,
-      mode: 'SIMULATED_SANDBOX'
+      orderId: simOrder,
+      mode: 'SIMULATED_SANDBOX',
+      source: 'ONE_CLICK_TEST_PAYMENT'
     }
   });
 
   res.json({
     success: true,
-    message: `Payment of $100 for ${user?.name} simulated via PayPal Sandbox.`,
+    message: `Payment of ${formatCurrency(amount, currency)} for ${user?.name || 'Member'} simulated via PayPal Sandbox.`,
     collectedAmount: updatedCycle?.collected_amount,
     cycleFunded: updatedCycle?.collected_amount! >= updatedCycle?.target_pot_amount!
   });
@@ -642,12 +688,14 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Message content is required' });
   }
 
+  const authUser = getAuthUser(req);
+  const activeUserId = authUser?.id || req.body.userId || currentUserId;
   const activeCircleId = circleId || 'circle-diaspora-8';
 
   const response = await processAgentMessage({
     content: content.trim(),
     circleId: activeCircleId,
-    userId: currentUserId
+    userId: activeUserId
   });
 
   // Store in message log
@@ -655,10 +703,66 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
   execute(
     `INSERT INTO messages (id, circle_id, user_id, sender_role, content, intent, parsed_parameters, status, created_at)
      VALUES (?, ?, ?, 'user', ?, ?, ?, 'processed', ?)`,
-    [msgId, activeCircleId, currentUserId, content, response.intent, JSON.stringify(response.structuredData || {}), new Date().toISOString()]
+    [msgId, activeCircleId, activeUserId, content, response.intent, JSON.stringify(response.structuredData || {}), new Date().toISOString()]
   );
 
   res.json(response);
+});
+
+app.post('/api/ai/action/confirm-extension', (req: Request, res: Response) => {
+  const { circleId, memberId, requestedDate, cycleId } = req.body;
+  const authUser = getAuthUser(req);
+  const activeUserId = authUser?.id || currentUserId;
+
+  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
+  if (!circle) return res.status(404).json({ error: 'Circle not found' });
+
+  const targetCycleId = cycleId || (
+    queryOne<Cycle>(`SELECT id FROM cycles WHERE circle_id = ? AND cycle_number = ?`, [circleId, circle.current_cycle_number])?.id || ''
+  );
+
+  const evaluation = evaluateExtensionRequest({
+    circleId,
+    memberId,
+    cycleId: targetCycleId,
+    requestedDate
+  });
+
+  if (!evaluation.allowed) {
+    return res.status(400).json({ error: evaluation.reason });
+  }
+
+  execute(
+    `UPDATE circle_members SET extensions_used = extensions_used + 1 WHERE id = ?`,
+    [memberId]
+  );
+
+  const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
+  const user = member ? queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
+
+  recordLedgerEntry({
+    circleId,
+    eventType: 'MEMBER_JOINED',
+    memberName: user?.name || 'Member',
+    recipientName: 'Community Pot',
+    cycleNumber: 1,
+    amount: 0,
+    currency: 'USD',
+    paymentStatus: 'ACTIVE',
+    paypalRef: `EXT-${memberId}`,
+    auditStatus: 'VERIFIED',
+    metadata: {
+      action: 'EXTENSION_GRANTED',
+      requestedDate,
+      graceDays: evaluation.graceDays
+    }
+  });
+
+  res.json({
+    success: true,
+    message: `Extension granted until ${requestedDate}. Updated on immutable ledger.`,
+    evaluation
+  });
 });
 
 /**

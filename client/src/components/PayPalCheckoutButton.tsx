@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CreditCard, CheckCircle2, AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { CreditCard, CheckCircle2, AlertCircle, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import { fetchPayPalConfig, createCheckoutOrder, captureCheckoutOrder } from '../api/client';
+import { formatCurrency, isPayPalSupported } from '../utils/currency';
 
 interface PayPalCheckoutButtonProps {
   circleId: string;
   cycleId: string;
   memberId: string;
   amount: number;
+  currency?: string;
   onSuccess: () => void;
 }
 
@@ -21,6 +23,7 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
   cycleId,
   memberId,
   amount,
+  currency = 'USD',
   onSuccess
 }) => {
   const [loading, setLoading] = useState(true);
@@ -33,8 +36,15 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const currentOrderIdRef = useRef<string | null>(null);
 
+  const currencySupported = isPayPalSupported(currency);
+
   useEffect(() => {
     let isMounted = true;
+
+    if (!currencySupported) {
+      setLoading(false);
+      return;
+    }
 
     async function initPayPal() {
       try {
@@ -44,7 +54,7 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
 
         const clientId = config.clientId || 'sb';
 
-        // Check if PayPal SDK already loaded
+        // Check if PayPal SDK already loaded with matching currency
         if (window.paypal && window.paypal.Buttons) {
           setSdkReady(true);
           setLoading(false);
@@ -53,28 +63,29 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
 
         // Dynamically load PayPal SDK script
         const scriptId = 'paypal-js-sdk';
-        if (!document.getElementById(scriptId)) {
-          const script = document.createElement('script');
-          script.id = scriptId;
-          script.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&currency=USD&components=buttons`;
-          script.async = true;
-          script.onload = () => {
-            if (isMounted) {
-              setSdkReady(true);
-              setLoading(false);
-            }
-          };
-          script.onerror = () => {
-            if (isMounted) {
-              console.warn('Failed to load PayPal JS SDK script. Sandbox simulator fallback active.');
-              setSdkReady(false);
-              setLoading(false);
-            }
-          };
-          document.body.appendChild(script);
-        } else {
-          setLoading(false);
+        const existingScript = document.getElementById(scriptId);
+        if (existingScript) {
+          existingScript.remove();
         }
+
+        const script = document.createElement('script');
+        script.id = scriptId;
+        script.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&currency=${currency.toUpperCase()}&components=buttons`;
+        script.async = true;
+        script.onload = () => {
+          if (isMounted) {
+            setSdkReady(true);
+            setLoading(false);
+          }
+        };
+        script.onerror = () => {
+          if (isMounted) {
+            console.warn('Failed to load PayPal JS SDK script. Direct server payment action available.');
+            setSdkReady(false);
+            setLoading(false);
+          }
+        };
+        document.body.appendChild(script);
       } catch (err: any) {
         if (isMounted) {
           console.warn('PayPal init notice:', err);
@@ -88,11 +99,11 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [currency, currencySupported]);
 
   // Render PayPal Smart Payment Buttons if SDK is ready
   useEffect(() => {
-    if (!sdkReady || !containerRef.current || !window.paypal?.Buttons) return;
+    if (!sdkReady || !containerRef.current || !window.paypal?.Buttons || !currencySupported) return;
 
     // Clear previous renders
     containerRef.current.innerHTML = '';
@@ -112,7 +123,7 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
             setStatusMessage('Creating PayPal Order on server...');
             setProcessing(true);
             try {
-              const res = await createCheckoutOrder(circleId, cycleId, memberId, amount);
+              const res = await createCheckoutOrder(circleId, cycleId, memberId, amount, currency);
               if (res.error) throw new Error(res.error);
               currentOrderIdRef.current = res.orderId;
               setStatusMessage('Awaiting PayPal Authorization...');
@@ -154,17 +165,17 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
     } catch (err) {
       console.warn('Error rendering PayPal buttons:', err);
     }
-  }, [sdkReady, circleId, cycleId, memberId, amount]);
+  }, [sdkReady, circleId, cycleId, memberId, amount, currency, currencySupported]);
 
-  // Direct Server-Side Checkout Action (Works in all environments seamlessly)
+  // Direct Server-Side Checkout Action (Works reliably across all environments)
   const handleDirectServerCheckout = async () => {
     setError(null);
     setProcessing(true);
     setStatusMessage('Initiating PayPal Checkout order...');
 
     try {
-      // Step 1: Create Order Server-Side
-      const orderRes = await createCheckoutOrder(circleId, cycleId, memberId, amount);
+      // Step 1: Create Order Server-Side with authoritative amount & currency
+      const orderRes = await createCheckoutOrder(circleId, cycleId, memberId, amount, currency);
       if (orderRes.error) throw new Error(orderRes.error);
 
       setStatusMessage('Capturing & validating payment with PayPal Sandbox...');
@@ -189,42 +200,57 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
       <div className="flex items-center justify-between text-[11px] text-slate-400">
         <span className="flex items-center gap-1.5 font-medium">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          PayPal Sandbox Gateway ({amount} USD)
+          PayPal Sandbox Gateway ({formatCurrency(amount, currency)} {currency})
         </span>
         <span className="font-mono text-[10px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
           {paypalMode === 'LIVE_SANDBOX' ? 'Live Sandbox Connected' : 'Sandbox Simulator Active'}
         </span>
       </div>
 
-      {/* Official PayPal Buttons Container */}
-      <div ref={containerRef} className="min-h-[44px]">
-        {loading && (
-          <div className="flex items-center justify-center py-3 text-xs text-slate-400 gap-2">
-            <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
-            <span>Loading PayPal Checkout SDK...</span>
+      {/* Unsupported Currency Warning */}
+      {!currencySupported ? (
+        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold">PayPal Unsupported Currency: {currency}</div>
+            <div className="mt-0.5 text-slate-400 leading-relaxed">
+              PayPal REST Checkout does not natively process {currency} transactions. Please use a supported currency (USD, EUR, GBP) or arrange local settlement with your circle organizer.
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <>
+          {/* Official PayPal Buttons Container */}
+          <div ref={containerRef} className="min-h-[44px]">
+            {loading && (
+              <div className="flex items-center justify-center py-3 text-xs text-slate-400 gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                <span>Loading PayPal Checkout SDK...</span>
+              </div>
+            )}
+          </div>
 
-      {/* Sandbox Buyer Account Guide */}
-      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
-        <span className="font-semibold text-slate-300 block mb-0.5">💡 PayPal Sandbox Testing Guide:</span>
-        To test the official PayPal Smart Button, log into the popup using a <span className="text-emerald-400 font-semibold">Sandbox Personal Account</span> (e.g. from PayPal Developer Dashboard &gt; Sandbox Accounts). Do not use the merchant business email or live credentials. Or click the direct button below:
-      </div>
+          {/* Sandbox Buyer Account Guide */}
+          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
+            <span className="font-semibold text-slate-300 block mb-0.5">💡 PayPal Sandbox Testing Guide:</span>
+            To test the official PayPal Smart Button, log into the popup using a <span className="text-emerald-400 font-semibold">Sandbox Personal Account</span> (e.g. from PayPal Developer Dashboard &gt; Sandbox Accounts). Do not use the merchant business email or live credentials. Or click the direct button below:
+          </div>
 
-      {/* Fallback / Direct Sandbox Button */}
-      <button
-        onClick={handleDirectServerCheckout}
-        disabled={processing}
-        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#0070BA] to-[#003087] hover:brightness-110 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50"
-      >
-        <CreditCard className="w-4 h-4" />
-        <span>
-          {processing
-            ? statusMessage || 'Processing Sandbox Payment...'
-            : `Pay $${amount}.00 via PayPal Sandbox`}
-        </span>
-      </button>
+          {/* Fallback / Direct Sandbox Button */}
+          <button
+            onClick={handleDirectServerCheckout}
+            disabled={processing}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#0070BA] to-[#003087] hover:brightness-110 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50"
+          >
+            <CreditCard className="w-4 h-4" />
+            <span>
+              {processing
+                ? statusMessage || 'Processing Sandbox Payment...'
+                : `Pay ${formatCurrency(amount, currency)} via PayPal Sandbox`}
+            </span>
+          </button>
+        </>
+      )}
 
       {/* Status or Progress Feedback */}
       {statusMessage && !error && (

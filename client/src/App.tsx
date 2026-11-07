@@ -56,7 +56,12 @@ export const App: React.FC = () => {
         fetchContributions(targetCircleId)
       ]);
 
-      if (cData.circle) setCircle(cData.circle);
+      if (cData.circle) {
+        setCircle({
+          ...cData.circle,
+          policy: cData.policy || cData.circle.policy
+        });
+      }
       setMembers(mData.members || []);
       setCycles(cyData.cycles || []);
       setContributions(contrData.contributions || []);
@@ -349,8 +354,13 @@ export const App: React.FC = () => {
 
         {currentTab === 'assistant' && (
           <AIAssistant
+            currentUser={currentUser}
             circle={circle}
+            currentCycle={cycles.find(c => c.cycle_number === (circle?.current_cycle_number || 1)) || cycles[0]}
+            members={members}
+            contributions={contributions}
             onCircleCreated={() => loadCircleData(activeCircleId)}
+            onNavigateToTab={(tab: string) => setCurrentTab(tab as any)}
             initialPrompt={assistantPrompt}
           />
         )}

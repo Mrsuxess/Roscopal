@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Circle, CircleMember, Cycle, Contribution, SafetyCheckResult } from '../types';
+import { formatCurrency } from '../utils/currency';
 import { 
   fetchSafetyCheck, 
   executePayout, 
@@ -115,9 +116,11 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
     }
   };
 
+  const currency = circle?.policy?.currency || 'USD';
+  const contributionAmount = circle?.policy?.contribution_amount || (currentCycle?.target_pot_amount ? currentCycle.target_pot_amount / (members.length || 1) : 100);
   const collected = currentCycle?.collected_amount || 0;
-  const target = currentCycle?.target_pot_amount || 800;
-  const percentCollected = Math.min(100, Math.round((collected / target) * 100));
+  const target = currentCycle?.target_pot_amount || (contributionAmount * (members.length || circle?.policy?.members_count || 8));
+  const percentCollected = target > 0 ? Math.min(100, Math.round((collected / target) * 100)) : 0;
 
   // Determine which members paid
   const completedContrMemberIds = new Set(
@@ -216,10 +219,10 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
             <DollarSign className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="mt-2 text-2xl font-black text-white">
-            ${target.toLocaleString()} <span className="text-xs font-normal text-slate-400">USD</span>
+            {formatCurrency(target, currency)} <span className="text-xs font-normal text-slate-400">{currency}</span>
           </div>
           <div className="mt-1 text-xs text-slate-400">
-            $100 × 8 members monthly
+            {formatCurrency(contributionAmount, currency)} × {members.length || circle?.policy?.members_count || 1} members {circle?.policy?.cadence || 'monthly'}
           </div>
         </div>
 
@@ -229,7 +232,7 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
             <TrendingUp className="w-4 h-4 text-sky-400" />
           </div>
           <div className="mt-2 text-2xl font-black text-white">
-            ${collected.toLocaleString()}{' '}
+            {formatCurrency(collected, currency)}{' '}
             <span className="text-xs font-semibold text-emerald-400">({percentCollected}%)</span>
           </div>
           <div className="mt-1 text-xs text-slate-400">
@@ -257,10 +260,10 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
             <Users className="w-4 h-4 text-purple-400" />
           </div>
           <div className="mt-2 text-lg font-bold text-white truncate">
-            {currentCycle?.recipient_name || 'Chidi Anozie'}
+            {currentCycle?.recipient_name || 'Pending assignment'}
           </div>
           <div className="mt-1 text-xs text-emerald-400 flex items-center gap-1 font-medium">
-            <span>Turn #1 Priority · Urgent rent</span>
+            <span>Turn #{currentCycle?.cycle_number || 1} Beneficiary</span>
           </div>
         </div>
       </div>
@@ -269,10 +272,10 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
       <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-800">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h3 className="font-bold text-white text-sm">Cycle #1 Contribution Progress</h3>
+            <h3 className="font-bold text-white text-sm">Cycle #{currentCycle?.cycle_number || 1} Contribution Progress</h3>
             <p className="text-xs text-slate-400">Deterministic payout unlocked only when 100% of required contributions are confirmed.</p>
           </div>
-          <span className="text-sm font-bold text-emerald-400">${collected} / ${target}</span>
+          <span className="text-sm font-bold text-emerald-400">{formatCurrency(collected, currency)} / {formatCurrency(target, currency)}</span>
         </div>
 
         <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
@@ -375,7 +378,7 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
             { label: '2. Cycle Open/Funded', ok: safetyCheck?.checks?.cycleValid },
             { label: '3. Recipient Valid', ok: safetyCheck?.checks?.recipientValid },
             { label: '4. Contributions Confirmed', ok: safetyCheck?.checks?.contributionsConfirmed },
-            { label: '5. Amount Exact ($800)', ok: safetyCheck?.checks?.amountExact },
+            { label: `5. Amount Exact (${formatCurrency(target, currency)})`, ok: safetyCheck?.checks?.amountExact },
             { label: '6. Zero Duplicate Payout', ok: safetyCheck?.checks?.noDuplicatePayout },
             { label: '7. Circle Policy Satisfied', ok: safetyCheck?.checks?.policySatisfied },
             { label: '8. Approvals Satisfied', ok: safetyCheck?.checks?.approvalsSatisfied },

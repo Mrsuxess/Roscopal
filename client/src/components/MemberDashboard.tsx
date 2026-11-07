@@ -6,13 +6,14 @@ import {
   Clock, 
   CheckCircle2, 
   ShieldCheck, 
-  AlertCircle,
-  Sparkles,
-  ExternalLink
+  AlertCircle, 
+  Sparkles, 
+  ExternalLink 
 } from 'lucide-react';
 import { User, Circle, CircleMember, Cycle, Contribution } from '../types';
 import { simulateMemberPayment, sendAgentMessage } from '../api/client';
 import { PayPalCheckoutButton } from './PayPalCheckoutButton';
+import { formatCurrency } from '../utils/currency';
 
 interface MemberDashboardProps {
   currentUser: User | null;
@@ -35,6 +36,11 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
 }) => {
   const currentCycle = cycles.find(c => c.cycle_number === (circle?.current_cycle_number || 1)) || cycles[0];
   const myMemberRecord = members.find(m => m.user_id === currentUser?.id);
+
+  const currency = circle?.policy?.currency || 'USD';
+  const contributionAmount = circle?.policy?.contribution_amount || (currentCycle?.target_pot_amount ? currentCycle.target_pot_amount / (members.length || 1) : 100);
+  const targetPot = currentCycle?.target_pot_amount || (contributionAmount * (members.length || circle?.policy?.members_count || 1));
+  const graceDays = circle?.policy?.grace_days || 5;
 
   // Check if current user has paid for current cycle
   const myCompletedContribution = contributions.find(
@@ -102,7 +108,7 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
             <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 mb-5">
               <div className="flex items-baseline justify-between">
                 <span className="text-sm text-slate-400 font-medium">Your Required Amount</span>
-                <span className="text-3xl font-black text-white">$100.00 <span className="text-sm font-normal text-slate-400">USD</span></span>
+                <span className="text-3xl font-black text-white">{formatCurrency(contributionAmount, currency)} <span className="text-sm font-normal text-slate-400">{currency}</span></span>
               </div>
               <p className="text-xs text-slate-500 mt-1">
                 Zero processing deductions. 100% of collected funds form the shared pot.
@@ -127,7 +133,8 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
                   circleId={circle.id}
                   cycleId={currentCycle.id}
                   memberId={myMemberRecord.id}
-                  amount={circle.policy?.contribution_amount || 100}
+                  amount={contributionAmount}
+                  currency={currency}
                   onSuccess={onRefresh}
                 />
                 <div className="flex justify-end">
@@ -157,7 +164,7 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
               <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/20">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-purple-400">Current Pot Beneficiary</span>
                 <div className="font-bold text-white text-sm mt-0.5">{currentCycle?.recipient_name}</div>
-                <div className="text-xs text-slate-400">Target Pot: $800 USD (Turn #1)</div>
+                <div className="text-xs text-slate-400">Target Pot: {formatCurrency(targetPot, currency)} (Turn #{currentCycle?.cycle_number || 1})</div>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-800/40 border border-slate-800">
@@ -170,25 +177,22 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
 
           <div className="mt-4 pt-4 border-t border-slate-800">
             <button
-              onClick={() => onOpenAssistant(`Can I exchange my turn #${myMemberRecord?.turn_order} with another member?`)}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
+              onClick={() => onOpenAssistant(`Can I exchange my turn with another member?`)}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2 transition-all"
             >
-              <ArrowRightLeft className="w-3.5 h-3.5 text-slate-400" />
-              <span>Request Turn Swap</span>
+              <ArrowRightLeft className="w-4 h-4 text-purple-400" />
+              Propose Turn Swap
             </button>
           </div>
         </div>
       </div>
 
-      {/* Circle Announcements */}
-      <div className="p-6 rounded-2xl bg-slate-900/40 border border-slate-800">
-        <div className="flex items-center gap-2 mb-2">
-          <Sparkles className="w-4 h-4 text-emerald-400" />
-          <h3 className="font-bold text-sm text-white">Circle Transparency & Rules</h3>
+      {/* Rules & Policy Summary */}
+      <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800 flex items-start gap-3">
+        <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+        <div className="text-xs text-slate-400 leading-relaxed">
+          This circle operates under strict deterministic policy rules: {graceDays}-day grace period, maximum 1 extension per member, and 100% pot collection condition prior to payout execution. All transactions are permanently audited using SHA-256 cryptographic hash-chaining.
         </div>
-        <p className="text-xs text-slate-400 leading-relaxed">
-          This circle operates under strict deterministic policy rules: 5-day grace period, maximum 1 extension per member, and 100% pot collection condition prior to payout execution. All transactions are permanently audited using SHA-256 cryptographic hash-chaining.
-        </p>
       </div>
     </div>
   );

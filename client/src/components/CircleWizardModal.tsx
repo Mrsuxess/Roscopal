@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { createCircleWizard } from '../api/client';
 import { Circle } from '../types';
+import { formatCurrency, getCurrencySymbol } from '../utils/currency';
 
 interface CircleWizardModalProps {
   isOpen: boolean;
@@ -364,11 +365,11 @@ export const CircleWizardModal: React.FC<CircleWizardModalProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Accumulated Pot Per Cycle:</span>
                   <span className="text-2xl font-black text-emerald-400">
-                    ${totalPot.toFixed(2)} <span className="text-xs font-normal text-slate-400">{currency}</span>
+                    {formatCurrency(totalPot, currency)} <span className="text-xs font-normal text-slate-400">{currency}</span>
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-400 mt-1">
-                  {membersCount} members × ${contributionAmount} = ${totalPot} paid to 1 beneficiary each {cadence}.
+                  {membersCount} members × {formatCurrency(contributionAmount, currency)} = {formatCurrency(totalPot, currency)} paid to 1 beneficiary each {cadence}.
                 </div>
               </div>
             </div>
@@ -458,11 +459,11 @@ export const CircleWizardModal: React.FC<CircleWizardModalProps> = ({
                 </div>
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
                   <span className="text-xs text-slate-400 font-medium">Target Pot Per Turn</span>
-                  <span className="text-base font-black text-white">${totalPot.toFixed(2)} {currency}</span>
+                  <span className="text-base font-black text-white">{formatCurrency(totalPot, currency)} {currency}</span>
                 </div>
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
                   <span className="text-xs text-slate-400 font-medium">Contribution / Member</span>
-                  <span className="text-sm font-bold text-slate-200">${contributionAmount} {currency} / {cadence}</span>
+                  <span className="text-sm font-bold text-slate-200">{formatCurrency(contributionAmount, currency)} / {cadence}</span>
                 </div>
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
                   <span className="text-xs text-slate-400 font-medium">Total Turns / Duration</span>

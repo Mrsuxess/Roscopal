@@ -122,11 +122,20 @@ export async function joinCircleWithCode(code: string, userId?: string) {
   return res.json();
 }
 
-export async function createCheckoutOrder(circleId: string, cycleId: string, memberId: string, amount: number) {
+export async function createCheckoutOrder(circleId: string, cycleId: string, memberId: string, amount: number, currency?: string) {
   const res = await fetch(`${BASE_URL}/contributions/checkout`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify({ circleId, cycleId, memberId, amount })
+    body: JSON.stringify({ circleId, cycleId, memberId, amount, currency })
+  });
+  return res.json();
+}
+
+export async function confirmAiExtension(circleId: string, memberId: string, requestedDate: string, cycleId?: string) {
+  const res = await fetch(`${BASE_URL}/ai/action/confirm-extension`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ circleId, memberId, requestedDate, cycleId })
   });
   return res.json();
 }

@@ -1,3 +1,15 @@
+export type IntentType = 
+  | 'CIRCLE_SETUP'
+  | 'CONTRIBUTION_INQUIRY'
+  | 'PAYMENT_DISPUTE'
+  | 'EXTENSION_REQUEST'
+  | 'TURN_SWAP_REQUEST'
+  | 'WITHDRAWAL_REQUEST'
+  | 'PAYOUT_ELIGIBILITY_INQUIRY'
+  | 'FUNDING_PROGRESS_INQUIRY'
+  | 'INVITATION_INQUIRY'
+  | 'GENERAL_FAQ';
+
 export interface User {
   id: string;
   name: string;

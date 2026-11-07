@@ -1,108 +1,24 @@
-import { IntentType } from '../types';
-import { queryAll, queryOne } from '../db/database';
-import { evaluateExtensionRequest, evaluateTurnSwap } from '../engine/policyRules';
-import { User, Circle, CirclePolicy, Cycle, CircleMember, Contribution } from '../types';
+import { IntentType, User, Circle, CirclePolicy, Cycle, CircleMember, Contribution } from '../types';
+import { queryAll, queryOne, execute } from '../db/database';
+import { evaluateExtensionRequest, evaluateTurnSwap, evaluatePayoutSafety } from '../engine/policyRules';
+import { formatCurrency, getCurrencySymbol } from '../utils/currency';
 
 export interface AgentResponse {
   intent: IntentType;
   confidence: number;
   message: string;
-  actionRequired?: 'CONFIRM_CIRCLE_CREATION' | 'APPROVE_EXTENSION' | 'CONFIRM_SWAP' | 'NONE';
+  actionRequired?: 'CONFIRM_CIRCLE_CREATION' | 'APPROVE_EXTENSION' | 'CONFIRM_SWAP' | 'NAVIGATE_CHECKOUT' | 'SHARE_INVITE' | 'NONE';
   structuredData?: any;
+  engine: 'deterministic_contextual' | 'anthropic_llm';
 }
 
 /**
- * 1. CircleSetupAgent
- */
-export function handleCircleSetup(nlPrompt: string): AgentResponse {
-  const text = nlPrompt.toLowerCase();
-
-  // Extract members count
-  let membersCount = 8;
-  const membersMatch = text.match(/(\d+)\s*(people|members|person|of us)/i) || text.match(/(eight|six|four|ten|twelve)\s*(people|members|person)/i);
-  if (membersMatch) {
-    const wordMap: Record<string, number> = { four: 4, six: 6, eight: 8, ten: 10, twelve: 12 };
-    membersCount = wordMap[membersMatch[1].toLowerCase()] || parseInt(membersMatch[1], 10) || 8;
-  }
-
-  // Extract amount
-  let amount = 100;
-  const amountMatch = text.match(/\$\s*(\d+(\.\d+)?)/) || text.match(/(\d+)\s*(dollars|usd|bucks)/i);
-  if (amountMatch) {
-    amount = parseFloat(amountMatch[1]) || 100;
-  }
-
-  // Extract cadence
-  let cadence: 'monthly' | 'weekly' | 'biweekly' = 'monthly';
-  if (text.includes('week') && !text.includes('bi')) cadence = 'weekly';
-  else if (text.includes('biweekly') || text.includes('every two weeks')) cadence = 'biweekly';
-
-  // Extract start date
-  let startDate = '2026-12-01';
-  const dateMatch = text.match(/(december|dec|january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov)\s*(\d{1,2})/i);
-  if (dateMatch) {
-    const month = dateMatch[1].slice(0, 3).toUpperCase();
-    const day = dateMatch[2].padStart(2, '0');
-    startDate = `2026-12-${day}`;
-  }
-
-  // Extract priority request (e.g. Chidi needs first payout)
-  let firstTurnRecipient = 'Chidi';
-  let firstTurnReason = 'Rent payment';
-  const nameMatch = text.match(/([a-zA-Z]+)\s*(needs|should receive|gets|takes)\s*the\s*first/i) || text.match(/first\s*(payout|turn|pot)\s*(to|for)\s*([a-zA-Z]+)/i);
-  if (nameMatch) {
-    firstTurnRecipient = nameMatch[1] || nameMatch[3] || 'Chidi';
-  }
-  if (text.includes('rent')) firstTurnReason = 'Urgent rent payment';
-  else if (text.includes('medical')) firstTurnReason = 'Medical expenses';
-  else if (text.includes('school')) firstTurnReason = 'Tuition / school fees';
-
-  const potTotal = membersCount * amount;
-
-  const proposedPolicy = {
-    name: 'Diaspora Heritage Circle',
-    currency: 'USD',
-    contribution_amount: amount,
-    cadence,
-    start_date: startDate,
-    total_cycles: membersCount,
-    members_count: membersCount,
-    target_pot: potTotal,
-    order_rule: 'draw_with_requests',
-    grace_days: 5,
-    payout_condition: 'all_paid',
-    shortfall_policy: 'group_vote',
-    max_extensions_per_member: 1,
-    priority_allocations: [
-      { memberName: firstTurnRecipient, turn: 1, reason: firstTurnReason }
-    ]
-  };
-
-  const message = `I have parsed your circle requirements:
-• ${membersCount} members contributing $${amount} ${cadence}
-• Total pot each cycle: $${potTotal.toLocaleString()} USD
-• Start Date: ${startDate}
-• Grace Window: 5 days with maximum 1 extension per member
-• Round 1 Priority: ${firstTurnRecipient} assigned Turn #1 (${firstTurnReason})
-• Payout Gate: Deterministic condition (100% collected before release)
-
-Please review the proposed circle policy below and click **Confirm & Initialize Circle** to activate.`;
-
-  return {
-    intent: 'CIRCLE_SETUP',
-    confidence: 0.98,
-    message,
-    actionRequired: 'CONFIRM_CIRCLE_CREATION',
-    structuredData: proposedPolicy
-  };
-}
-
-/**
- * 2. MessageClassificationAgent
+ * 1. Natural Language Intent Classifier
  */
 export function classifyMessage(content: string): IntentType {
   const text = content.toLowerCase().trim();
 
+  // Circle creation
   if (
     text.includes('create a circle') ||
     text.includes('start a circle') ||
@@ -116,319 +32,613 @@ export function classifyMessage(content: string): IntentType {
     return 'CIRCLE_SETUP';
   }
 
+  // Payout eligibility / Why payout is blocked
   if (
-    text.includes('can i exchange') ||
+    text.includes('why is payout blocked') ||
+    text.includes('why is the payout blocked') ||
+    text.includes('why isn\'t the circle ready') ||
+    text.includes('why isn\'t the pot ready') ||
+    text.includes('why can\'t we payout') ||
+    text.includes('why can\'t i payout') ||
+    text.includes('ready for payout') ||
+    text.includes('payout eligibility') ||
+    text.includes('can we payout') ||
+    text.includes('eligible for payout') ||
+    text.includes('release the pot') ||
+    text.includes('release payout')
+  ) {
+    return 'PAYOUT_ELIGIBILITY_INQUIRY';
+  }
+
+  // Funding progress
+  if (
+    text.includes('how much has our circle collected') ||
+    text.includes('how much have we collected') ||
+    text.includes('how much is collected') ||
+    text.includes('funding progress') ||
+    text.includes('who has paid') ||
+    text.includes('who hasn\'t paid') ||
+    text.includes('unpaid members') ||
+    text.includes('how much in the pot') ||
+    text.includes('pot balance')
+  ) {
+    return 'FUNDING_PROGRESS_INQUIRY';
+  }
+
+  // Invitations
+  if (
+    text.includes('invite') ||
+    text.includes('invitation code') ||
+    text.includes('invite code') ||
+    text.includes('invite link') ||
+    text.includes('add a member') ||
+    text.includes('add another member')
+  ) {
+    return 'INVITATION_INQUIRY';
+  }
+
+  // Turn swaps
+  if (
+    text.includes('exchange') ||
     text.includes('swap my turn') ||
     text.includes('switch turns') ||
     text.includes('trade turns') ||
     text.includes('exchange with') ||
-    text.includes('swap turn')
+    text.includes('swap turn') ||
+    text.includes('trade with')
   ) {
     return 'TURN_SWAP_REQUEST';
   }
 
+  // Extension requests
   if (
-    text.includes('i can only pay on') ||
     text.includes('extension') ||
     text.includes('need more time') ||
-    text.includes('pay next week') ||
-    text.includes('grace period') ||
     text.includes('pay late') ||
-    text.includes('delay payment')
+    text.includes('delay payment') ||
+    text.includes('grace period') ||
+    text.includes('i can only pay on') ||
+    text.includes('pay next week')
   ) {
     return 'EXTENSION_REQUEST';
   }
 
+  // Disputes & Verification
   if (
     text.includes('i already paid') ||
     text.includes('already sent') ||
     text.includes('payment dispute') ||
     text.includes('debited but') ||
     text.includes('money was taken') ||
-    text.includes('deducted from paypal')
+    text.includes('deducted from paypal') ||
+    text.includes('payment succeeded') ||
+    text.includes('verify my payment')
   ) {
     return 'PAYMENT_DISPUTE';
   }
 
+  // Member contribution inquiry / Next recipient
+  if (
+    text.includes('how much do i owe') ||
+    text.includes('when is my payment due') ||
+    text.includes('when is my next contribution') ||
+    text.includes('how to pay') ||
+    text.includes('paypal link') ||
+    text.includes('payment status') ||
+    text.includes('who receives the next payout') ||
+    text.includes('who receives the pot') ||
+    text.includes('whose turn is it') ||
+    text.includes('when is my turn')
+  ) {
+    return 'CONTRIBUTION_INQUIRY';
+  }
+
+  // Withdrawals
   if (
     text.includes('leave the circle') ||
     text.includes('withdraw from circle') ||
     text.includes('drop out') ||
-    text.includes('cancel membership') ||
-    text.includes('cash out and leave')
+    text.includes('cancel membership')
   ) {
     return 'WITHDRAWAL_REQUEST';
-  }
-
-  if (
-    text.includes('how much do i owe') ||
-    text.includes('when is my payment due') ||
-    text.includes('how to pay') ||
-    text.includes('paypal link') ||
-    text.includes('payment status') ||
-    text.includes('who receives the pot') ||
-    text.includes('whose turn is it')
-  ) {
-    return 'CONTRIBUTION_INQUIRY';
   }
 
   return 'GENERAL_FAQ';
 }
 
 /**
- * 3. ExtensionRequestAgent
+ * 2. Natural Language Circle Setup Agent
  */
-export function handleExtensionRequest(content: string, circleId: string, memberId: string): AgentResponse {
-  // Extract date mention or default to +5 days
-  let requestedDate = '2026-12-06';
-  const match = content.match(/(\d{1,2})(th|st|nd|rd)?/);
-  if (match) {
-    const day = match[1].padStart(2, '0');
-    requestedDate = `2026-12-${day}`;
+export function handleCircleSetup(nlPrompt: string): AgentResponse {
+  const text = nlPrompt.toLowerCase();
+
+  // Extract members count (default 5 for new or 8 for heritage)
+  let membersCount = 5;
+  const membersMatch = text.match(/(\d+)\s*(people|members|person|of us)/i) || text.match(/(three|four|five|six|seven|eight|ten|twelve)\s*(people|members|person)/i);
+  if (membersMatch) {
+    const wordMap: Record<string, number> = { three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, ten: 10, twelve: 12 };
+    membersCount = wordMap[membersMatch[1].toLowerCase()] || parseInt(membersMatch[1], 10) || 5;
   }
 
-  // Find member's open cycle
-  const currentCycle = queryOne<Cycle>(
-    `SELECT * FROM cycles WHERE circle_id = ? AND status = 'open' LIMIT 1`,
-    [circleId]
-  );
-
-  const cycleId = currentCycle ? currentCycle.id : 'default-cycle';
-  const evaluation = evaluateExtensionRequest({
-    circleId,
-    memberId,
-    cycleId,
-    requestedDate
-  });
-
-  const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
-  const user = member ? queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
-  const name = user?.name || 'Member';
-
-  if (!evaluation.allowed) {
-    return {
-      intent: 'EXTENSION_REQUEST',
-      confidence: 0.95,
-      message: `Your extension request for ${requestedDate} could not be automatically approved: ${evaluation.reason} I have routed this to the circle organizer for review.`,
-      actionRequired: 'NONE',
-      structuredData: { evaluation, requestedDate, memberName: name }
-    };
+  // Extract amount
+  let amount = 1000;
+  const amountMatch = text.match(/\$\s*(\d+(\.\d+)?)/) || text.match(/(\d+)\s*(dollars|usd|bucks)/i);
+  if (amountMatch) {
+    amount = parseFloat(amountMatch[1]) || 1000;
   }
+
+  // Extract currency
+  let currency = 'USD';
+  if (text.includes('eur') || text.includes('euro') || text.includes('€')) currency = 'EUR';
+  else if (text.includes('gbp') || text.includes('pound') || text.includes('£')) currency = 'GBP';
+  else if (text.includes('ngn') || text.includes('naira') || text.includes('₦')) currency = 'NGN';
+  else if (text.includes('kes') || text.includes('shilling')) currency = 'KES';
+
+  // Extract cadence
+  let cadence: 'monthly' | 'weekly' | 'biweekly' = 'monthly';
+  if (text.includes('week') && !text.includes('bi')) cadence = 'weekly';
+  else if (text.includes('biweekly') || text.includes('every two weeks')) cadence = 'biweekly';
+
+  // Extract start date
+  let startDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+  const dateMatch = text.match(/(december|dec|january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov)\s*(\d{1,2})/i);
+  if (dateMatch) {
+    const day = dateMatch[2].padStart(2, '0');
+    startDate = `2026-12-${day}`;
+  }
+
+  const potTotal = membersCount * amount;
+
+  const proposedPolicy = {
+    name: 'Custom Savings Circle',
+    currency,
+    contribution_amount: amount,
+    cadence,
+    start_date: startDate,
+    total_cycles: membersCount,
+    members_count: membersCount,
+    target_pot: potTotal,
+    order_rule: 'draw_with_requests',
+    grace_days: 5,
+    payout_condition: 'all_paid',
+    shortfall_policy: 'group_vote',
+    max_extensions_per_member: 1
+  };
+
+  const message = `I have parsed your circle requirements:
+• **${membersCount} members** contributing **${formatCurrency(amount, currency)}** ${cadence}
+• **Total Pot Each Cycle:** ${formatCurrency(potTotal, currency)} (${membersCount} × ${formatCurrency(amount, currency)})
+• **Start Date:** ${startDate}
+• **Grace Window:** 5 days (Maximum 1 extension per member)
+• **Payout Gate:** Non-bypassable deterministic condition (100% collected before release)
+
+Review the parameters below and click **Confirm & Initialize Circle** to create your circle.`;
 
   return {
-    intent: 'EXTENSION_REQUEST',
-    confidence: 0.96,
-    message: `Hello ${name}. I have checked the circle policy:
-• Grace window: up to ${evaluation.graceDays} days
-• Extensions used: ${evaluation.currentExtensionsUsed} of ${evaluation.maxExtensions} permitted
-• Proposed extension to ${requestedDate} is **policy compliant**.
-
-A provisional extension holds the pot release until your payment is received on or before ${requestedDate}. Group members have been notified respectfully.`,
-    actionRequired: evaluation.requiresOrganizerApproval ? 'APPROVE_EXTENSION' : 'NONE',
-    structuredData: { evaluation, requestedDate, memberName: name }
+    intent: 'CIRCLE_SETUP',
+    confidence: 0.98,
+    message,
+    actionRequired: 'CONFIRM_CIRCLE_CREATION',
+    structuredData: proposedPolicy,
+    engine: 'deterministic_contextual'
   };
 }
 
 /**
- * 4. TurnSwapAgent
- */
-export function handleTurnSwap(content: string, circleId: string, requesterMemberId: string): AgentResponse {
-  const members = queryAll<CircleMember>(
-    `SELECT cm.*, u.name FROM circle_members cm JOIN users u ON cm.user_id = u.id WHERE cm.circle_id = ?`,
-    [circleId]
-  );
-
-  const requester = members.find(m => m.id === requesterMemberId);
-  
-  // Find target member mentioned in text
-  let targetMember = members.find(m => m.id !== requesterMemberId && content.toLowerCase().includes(m.user?.name?.toLowerCase() || (m as any).name?.toLowerCase()));
-  if (!targetMember) {
-    // Default to Chidi or next member for demo flow
-    targetMember = members.find(m => (m as any).name?.includes('Chidi')) || members[1];
-  }
-
-  if (!requester || !targetMember) {
-    return {
-      intent: 'TURN_SWAP_REQUEST',
-      confidence: 0.92,
-      message: `Could not identify the members for this turn swap. Please specify the name of the circle member you want to swap with.`,
-      actionRequired: 'NONE'
-    };
-  }
-
-  const evaluation = evaluateTurnSwap({
-    circleId,
-    memberAId: requester.id,
-    memberBId: targetMember.id
-  });
-
-  const nameA = (requester as any).name || 'Requester';
-  const nameB = (targetMember as any).name || 'Target Member';
-
-  if (!evaluation.allowed) {
-    return {
-      intent: 'TURN_SWAP_REQUEST',
-      confidence: 0.95,
-      message: `Turn swap could not be completed: ${evaluation.reason}`,
-      actionRequired: 'NONE',
-      structuredData: evaluation
-    };
-  }
-
-  return {
-    intent: 'TURN_SWAP_REQUEST',
-    confidence: 0.97,
-    message: `Turn swap requested between **${nameA}** (Turn #${evaluation.memberA.turn}) and **${nameB}** (Turn #${evaluation.memberB.turn}):
-• Both positions are open and unreleased.
-• Rule check passed: no prior payouts exist on either slot.
-• Action: Dual confirmation initiated. Waiting for ${nameB}'s confirmation and Organizer sign-off.`,
-    actionRequired: 'CONFIRM_SWAP',
-    structuredData: {
-      memberAId: requester.id,
-      memberAName: nameA,
-      memberATurn: evaluation.memberA.turn,
-      memberBId: targetMember.id,
-      memberBName: nameB,
-      memberBTurn: evaluation.memberB.turn
-    }
-  };
-}
-
-/**
- * 5. DisputeResolutionAgent
- */
-export function handlePaymentDispute(content: string, circleId: string, memberId: string): AgentResponse {
-  // Inspect payment records deterministically. Never hallucinate!
-  const completedContributions = queryAll<Contribution>(
-    `SELECT * FROM contributions WHERE circle_id = ? AND member_id = ? AND status = 'completed'`,
-    [circleId, memberId]
-  );
-
-  const pendingContributions = queryAll<Contribution>(
-    `SELECT * FROM contributions WHERE circle_id = ? AND member_id = ? AND status = 'pending'`,
-    [circleId, memberId]
-  );
-
-  const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
-  const user = member ? queryOne<User>(`SELECT name, paypal_email FROM users WHERE id = ?`, [member.user_id]) : null;
-
-  if (completedContributions.length > 0) {
-    const latest = completedContributions[0];
-    return {
-      intent: 'PAYMENT_DISPUTE',
-      confidence: 0.98,
-      message: `Good news ${user?.name || ''}! Your payment of $${latest.amount} USD has already been verified and recorded on the immutable ledger:
-• PayPal Order Ref: ${latest.paypal_order_id || 'Captured'}
-• Timestamp: ${latest.completed_at || latest.created_at}
-• Status: 100% Verified. No further action needed!`,
-      actionRequired: 'NONE',
-      structuredData: latest
-    };
-  }
-
-  if (pendingContributions.length > 0) {
-    return {
-      intent: 'PAYMENT_DISPUTE',
-      confidence: 0.95,
-      message: `I checked the records for account (${user?.paypal_email || 'your email'}). A checkout order was initiated but PayPal has not yet returned a capture confirmation webhook. If money was debited, please provide your PayPal Transaction ID so I can reconcile it immediately.`,
-      actionRequired: 'NONE',
-      structuredData: pendingContributions[0]
-    };
-  }
-
-  return {
-    intent: 'PAYMENT_DISPUTE',
-    confidence: 0.94,
-    message: `I inspected our payment gateway and audit ledger for ${user?.name || 'your account'}, but no successful transaction has been recorded yet. Please click 'Pay Contribution' on your dashboard to complete the transaction via PayPal Sandbox.`,
-    actionRequired: 'NONE'
-  };
-}
-
-/**
- * 6. MonthlySummaryAgent
- */
-export function generateCycleSummary(circleId: string, cycleNumber: number): string {
-  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
-  const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = ?`, [circleId, cycleNumber]);
-  const contributions = queryAll<Contribution>(`SELECT * FROM contributions WHERE cycle_id = ? AND status = 'completed'`, [cycle?.id || '']);
-  const members = queryAll<CircleMember>(`SELECT cm.*, u.name FROM circle_members cm JOIN users u ON cm.user_id = u.id WHERE cm.circle_id = ?`, [circleId]);
-  
-  const recipientMember = members.find(m => m.id === cycle?.recipient_member_id);
-  const recipientName = (recipientMember as any)?.name || 'Cycle Recipient';
-
-  return `📊 **Cycle #${cycleNumber} Summary for ${circle?.name || 'ROSCOPAL Circle'}**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Pot Target: $${cycle?.target_pot_amount || 800} USD
-• Collected: $${cycle?.collected_amount || 800} USD (${contributions.length}/${members.length} members paid)
-• Payout Recipient: **${recipientName}**
-• Status: ${cycle?.status === 'paid_out' ? '✅ Paid out successfully via PayPal' : '⏳ Awaiting final release condition'}
-• Audit Status: Cryptographic SHA-256 Hash Chain Verified
-• Next Cycle Due: Jan 1, 2027 (Turn #2)`;
-}
-
-/**
- * 7. PaymentReminderAgent
- */
-export function generateReminderMessage(memberName: string, amount: number, dueDate: string, type: 'pre_due' | 'on_due' | 'post_due'): string {
-  if (type === 'pre_due') {
-    return `Hi ${memberName}, friendly reminder that your $${amount} savings contribution for this cycle is due in 3 days (${dueDate}). You can complete it anytime with one click via PayPal!`;
-  }
-  if (type === 'on_due') {
-    return `Hi ${memberName}, today is the due date for your $${amount} circle contribution (${dueDate}). Let's keep the circle moving forward!`;
-  }
-  return `Hi ${memberName}, we noticed your contribution was due yesterday. If you need a policy grace extension, simply let ROSCOPAL know in the chat!`;
-}
-
-/**
- * Master Agent Dispatcher
+ * Master Agent Dispatcher with Live Context & Deterministic Accuracy
  */
 export async function processAgentMessage(params: {
   content: string;
   circleId: string;
   userId: string;
 }): Promise<AgentResponse> {
-  const intent = classifyMessage(params.content);
+  const { content, circleId, userId } = params;
+  const intent = classifyMessage(content);
 
-  // Find member ID if exists
-  const member = queryOne<CircleMember>(
-    `SELECT * FROM circle_members WHERE circle_id = ? AND user_id = ?`,
-    [params.circleId, params.userId]
+  // 1. Fetch live contextual data from database
+  const user = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [userId]) || {
+    id: userId,
+    name: 'Member',
+    email: 'member@roscopal.io',
+    role: 'member',
+    paypal_email: 'member@roscopal.io',
+    location: 'Global'
+  };
+
+  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
+  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
+  const currentCycle = queryOne<Cycle>(
+    `SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = ?`,
+    [circleId, circle?.current_cycle_number || 1]
   );
-  const memberId = member ? member.id : params.userId;
+  const allCycles = queryAll<Cycle>(
+    `SELECT c.*, u.name as recipient_name 
+     FROM cycles c 
+     LEFT JOIN circle_members cm ON c.recipient_member_id = cm.id 
+     LEFT JOIN users u ON cm.user_id = u.id 
+     WHERE c.circle_id = ? 
+     ORDER BY c.cycle_number ASC`,
+    [circleId]
+  );
 
+  const members = queryAll<any>(
+    `SELECT cm.*, u.name, u.email, u.paypal_email, u.location 
+     FROM circle_members cm 
+     JOIN users u ON cm.user_id = u.id 
+     WHERE cm.circle_id = ? AND cm.status != 'departed'
+     ORDER BY cm.turn_order ASC`,
+    [circleId]
+  );
+
+  const myMemberRecord = members.find((m: any) => m.user_id === user.id);
+  const isOrganizer = circle ? circle.organizer_id === user.id : false;
+
+  const cycleId = currentCycle?.id || '';
+  const contributions = queryAll<Contribution>(
+    `SELECT * FROM contributions WHERE cycle_id = ? AND status = 'completed'`,
+    [cycleId]
+  );
+
+  const paidMemberIds = new Set(contributions.map(c => c.member_id));
+  const unpaidMembers = members.filter((m: any) => !paidMemberIds.has(m.id));
+  const myCompletedContribution = contributions.find(c => c.member_id === myMemberRecord?.id);
+
+  const currency = policy?.currency || 'USD';
+  const contributionAmount = policy ? policy.contribution_amount : (currentCycle ? currentCycle.target_pot_amount / (members.length || 1) : 100);
+  const targetPot = currentCycle?.target_pot_amount || (contributionAmount * (members.length || policy?.members_count || 1));
+  const collected = currentCycle?.collected_amount || 0;
+  const percentCollected = targetPot > 0 ? Math.round((collected / targetPot) * 100) : 0;
+
+  // Resolve recipient name
+  const currentRecipientMember = members.find((m: any) => m.id === currentCycle?.recipient_member_id);
+  const currentRecipientName = currentRecipientMember?.name || (currentCycle as any)?.recipient_name || 'Assigned Beneficiary';
+
+  // Dispatch according to intent
   switch (intent) {
     case 'CIRCLE_SETUP':
-      return handleCircleSetup(params.content);
-    case 'EXTENSION_REQUEST':
-      return handleExtensionRequest(params.content, params.circleId, memberId);
-    case 'TURN_SWAP_REQUEST':
-      return handleTurnSwap(params.content, params.circleId, memberId);
-    case 'PAYMENT_DISPUTE':
-      return handlePaymentDispute(params.content, params.circleId, memberId);
+      return handleCircleSetup(content);
+
+    case 'PAYOUT_ELIGIBILITY_INQUIRY': {
+      if (!currentCycle) {
+        return {
+          intent,
+          confidence: 0.95,
+          message: `There is currently no active open cycle for ${circle?.name || 'this circle'}.`,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      const safety = evaluatePayoutSafety(currentCycle.id);
+      const remaining = Math.max(0, targetPot - collected);
+
+      if (safety.allowed) {
+        return {
+          intent,
+          confidence: 0.99,
+          message: `✅ **Cycle #${currentCycle.cycle_number} is Fully Funded & Ready for Payout!**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• **Target Pot:** ${formatCurrency(targetPot, currency)} (100% collected)
+• **Turn Beneficiary:** **${currentRecipientName}** (Turn #${currentCycle.cycle_number})
+• **Payout Safety Status:** All 8 deterministic checks **PASSED**.
+• **Action:** ${isOrganizer ? 'As Circle Organizer, you can click **Execute Verified PayPal Payout** on your dashboard.' : 'The Circle Organizer has been notified to execute the payout.'}`,
+          structuredData: safety,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      // Format unpaid members list
+      const unpaidNames = unpaidMembers.map((m: any) => m.name).join(', ') || 'None';
+
+      const checkList = [
+        `1. Circle Active: ${safety.checks.circleActive ? 'PASSED' : 'HOLD'}`,
+        `2. Cycle Valid: ${safety.checks.cycleValid ? 'PASSED' : 'HOLD'}`,
+        `3. Recipient Active: ${safety.checks.recipientValid ? 'PASSED' : 'HOLD'}`,
+        `4. All Members Paid: ${safety.checks.contributionsConfirmed ? 'PASSED' : 'HOLD'} (${contributions.length}/${members.length} paid)`,
+        `5. Amount Exact: ${safety.checks.amountExact ? 'PASSED' : 'HOLD'} (${formatCurrency(collected, currency)} / ${formatCurrency(targetPot, currency)})`,
+        `6. Payout Idempotency: ${safety.checks.noDuplicatePayout ? 'PASSED' : 'HOLD'}`,
+        `7. Policy Satisfied: ${safety.checks.policySatisfied ? 'PASSED' : 'HOLD'}`,
+        `8. No Blocking Disputes: ${safety.checks.approvalsSatisfied ? 'PASSED' : 'HOLD'}`
+      ].join('\n• ');
+
+      return {
+        intent,
+        confidence: 0.98,
+        message: `🛡️ **Payout Hold: Deterministic Safety Engine**
+The Cycle #${currentCycle.cycle_number} pot (${formatCurrency(targetPot, currency)}) cannot be released yet because policy conditions are not satisfied:
+
+• ${checkList}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• **Still Required:** ${formatCurrency(remaining, currency)} remaining
+• **Awaiting Payments From:** ${unpaidNames}
+• **Policy:** 100% of member contributions must be verified via PayPal before any payout can be initiated.`,
+        structuredData: safety,
+        engine: 'deterministic_contextual'
+      };
+    }
+
+    case 'FUNDING_PROGRESS_INQUIRY': {
+      const paidNames = contributions.map(c => (c as any).member_name || 'Member').join(', ') || 'None yet';
+      const unpaidNames = unpaidMembers.map((m: any) => m.name).join(', ') || 'All members paid!';
+
+      return {
+        intent,
+        confidence: 0.98,
+        message: `📊 **Funding Progress for ${circle?.name || 'Savings Circle'} (Cycle #${currentCycle?.cycle_number || 1})**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• **Collected:** **${formatCurrency(collected, currency)}** of **${formatCurrency(targetPot, currency)}** (${percentCollected}%)
+• **Members Contributed (${contributions.length}/${members.length}):** ${paidNames}
+• **Awaiting Payment (${unpaidMembers.length}):** ${unpaidNames}
+• **Current Beneficiary:** **${currentRecipientName}** (Turn #${currentCycle?.cycle_number || 1})
+• **Cadence:** ${policy?.cadence || 'monthly'} · Due: ${currentCycle?.due_date || 'Upcoming'}`,
+        structuredData: {
+          collected,
+          targetPot,
+          percentCollected,
+          currency,
+          paidCount: contributions.length,
+          totalCount: members.length
+        },
+        engine: 'deterministic_contextual'
+      };
+    }
+
     case 'CONTRIBUTION_INQUIRY': {
-      const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE circle_id = ? AND status = 'open' LIMIT 1`, [params.circleId]);
-      const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [params.circleId]);
+      // Check if user asking whose turn it is
+      const text = content.toLowerCase();
+      if (text.includes('who receives') || text.includes('whose turn') || text.includes('when is my turn')) {
+        const myTurn = myMemberRecord ? myMemberRecord.turn_order : null;
+        const myTurnCycle = allCycles.find(c => c.cycle_number === myTurn);
+
+        return {
+          intent,
+          confidence: 0.96,
+          message: `🎯 **Payout Schedule & Turn Order**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• **Current Turn (#${currentCycle?.cycle_number || 1}):** **${currentRecipientName}** receives ${formatCurrency(targetPot, currency)}
+• **Your Turn:** ${myTurn ? `Turn #${myTurn} (${myTurnCycle ? `Cycle #${myTurn}, due ${myTurnCycle.due_date}` : 'Scheduled'})` : 'Turn not yet assigned.'}
+• **Total Circle Turns:** ${allCycles.length} cycles for ${members.length} members.`,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      // Member debt / due date
+      if (myCompletedContribution) {
+        return {
+          intent,
+          confidence: 0.98,
+          message: `Good news, **${user.name}**! You have already fulfilled your contribution for Cycle #${currentCycle?.cycle_number || 1}:
+• **Amount Paid:** ${formatCurrency(myCompletedContribution.amount, currency)} ${currency}
+• **PayPal Reference:** \`${myCompletedContribution.paypal_capture_id || myCompletedContribution.paypal_order_id || 'Captured'}\`
+• **Status:** Verified & permanently recorded on the SHA-256 audit ledger. You owe $0.00 for this cycle.`,
+          structuredData: myCompletedContribution,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      return {
+        intent,
+        confidence: 0.98,
+        message: `Hello **${user.name}**. For **${circle?.name || 'your circle'}** (Cycle #${currentCycle?.cycle_number || 1}):
+• **Required Contribution:** **${formatCurrency(contributionAmount, currency)} ${currency}**
+• **Due Date:** **${currentCycle?.due_date || 'Dec 1, 2026'}**
+• **Grace Period:** ${policy?.grace_days || 5} days
+• **Status:** Pending Payment
+
+Click below to complete your payment with PayPal Sandbox.`,
+        actionRequired: 'NAVIGATE_CHECKOUT',
+        structuredData: {
+          amount: contributionAmount,
+          currency,
+          cycleNumber: currentCycle?.cycle_number,
+          dueDate: currentCycle?.due_date
+        },
+        engine: 'deterministic_contextual'
+      };
+    }
+
+    case 'INVITATION_INQUIRY': {
+      const code = circle?.invite_code || 'RSC-HERO01';
+      return {
+        intent,
+        confidence: 0.98,
+        message: `To invite new members to **${circle?.name || 'your circle'}**:
+• **Invite Code:** \`${code}\`
+• **Direct Join Link:** \`/?invite=${code}\`
+• **Current Capacity:** ${members.length} / ${policy?.members_count || 8} members
+
+Prospective members can click 'Join Circle' and enter code \`${code}\` to preview the contribution rules and take their turn.`,
+        actionRequired: 'SHARE_INVITE',
+        structuredData: { inviteCode: code },
+        engine: 'deterministic_contextual'
+      };
+    }
+
+    case 'EXTENSION_REQUEST': {
+      const cycleDueDate = currentCycle ? new Date(currentCycle.due_date) : new Date();
+      // Default to +3 days from cycle due date (well within standard grace window)
+      let requestedDate = new Date(cycleDueDate.getTime() + 3 * 86400000).toISOString().split('T')[0];
+
+      const daysMatch = content.match(/(\d+)\s*(days|day)/i);
+      if (daysMatch) {
+        const addDays = parseInt(daysMatch[1], 10);
+        requestedDate = new Date(cycleDueDate.getTime() + addDays * 86400000).toISOString().split('T')[0];
+      } else {
+        const match = content.match(/(\d{1,2})(th|st|nd|rd)?/);
+        if (match) {
+          const targetDay = parseInt(match[1], 10);
+          const candidate = new Date(cycleDueDate);
+          candidate.setDate(targetDay);
+          // If candidate is in the past compared to due date, use candidate or +3 days
+          if (candidate.getTime() >= cycleDueDate.getTime() && (candidate.getTime() - cycleDueDate.getTime()) <= (policy?.grace_days || 5) * 86400000) {
+            requestedDate = candidate.toISOString().split('T')[0];
+          }
+        }
+      }
+
+      const memberId = myMemberRecord?.id || userId;
+      const evaluation = evaluateExtensionRequest({
+        circleId,
+        memberId,
+        cycleId: currentCycle?.id || 'cycle-1',
+        requestedDate
+      });
+
+      if (!evaluation.allowed) {
+        return {
+          intent,
+          confidence: 0.95,
+          message: `Hello ${user.name}. Your extension request for **${requestedDate}** could not be approved:
+• **Reason:** ${evaluation.reason}
+• **Policy:** Circle allows a maximum of ${evaluation.maxExtensions} extension(s) within a ${evaluation.graceDays}-day grace period.`,
+          actionRequired: 'NONE',
+          structuredData: evaluation,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      return {
+        intent,
+        confidence: 0.97,
+        message: `Hello **${user.name}**. I evaluated your request against the circle's financial rules:
+• **Grace Window:** Up to ${evaluation.graceDays} days permitted
+• **Extensions Used:** ${evaluation.currentExtensionsUsed} of ${evaluation.maxExtensions} allowed
+• **Result:** **Policy Compliant**.
+
+Click **Confirm Extension** below to register this extension on the ledger and notify the group.`,
+        actionRequired: 'APPROVE_EXTENSION',
+        structuredData: {
+          memberId,
+          memberName: user.name,
+          requestedDate,
+          cycleId: currentCycle?.id
+        },
+        engine: 'deterministic_contextual'
+      };
+    }
+
+    case 'TURN_SWAP_REQUEST': {
+      const requesterId = myMemberRecord?.id || members[0]?.id;
+      // Look for a target name
+      const targetMember = members.find((m: any) => m.id !== requesterId && content.toLowerCase().includes(m.name.toLowerCase())) || members.find((m: any) => m.id !== requesterId);
+
+      if (!targetMember) {
+        return {
+          intent,
+          confidence: 0.90,
+          message: `Please specify the name of the member you want to swap turns with.`,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      const evaluation = evaluateTurnSwap({
+        circleId,
+        memberAId: requesterId,
+        memberBId: targetMember.id
+      });
+
+      if (!evaluation.allowed) {
+        return {
+          intent,
+          confidence: 0.95,
+          message: `Turn swap could not be completed: ${evaluation.reason}`,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      return {
+        intent,
+        confidence: 0.97,
+        message: `Turn swap requested between **${user.name}** (Turn #${evaluation.memberA.turn}) and **${targetMember.name}** (Turn #${evaluation.memberB.turn}):
+• Both positions are verified unreleased and eligible for swap.
+• Deterministic rule check passed: no prior payouts exist on either slot.
+• Action: Organizer and dual-member confirmation required.`,
+        actionRequired: 'CONFIRM_SWAP',
+        structuredData: {
+          memberAId: requesterId,
+          memberBId: targetMember.id,
+          memberAName: user.name,
+          memberBName: targetMember.name
+        },
+        engine: 'deterministic_contextual'
+      };
+    }
+
+    case 'PAYMENT_DISPUTE': {
+      if (myCompletedContribution) {
+        return {
+          intent,
+          confidence: 0.98,
+          message: `Good news **${user.name}**! Your payment of **${formatCurrency(myCompletedContribution.amount, currency)}** has been confirmed:
+• **PayPal Capture Ref:** \`${myCompletedContribution.paypal_capture_id || myCompletedContribution.paypal_order_id}\`
+• **Completed At:** ${myCompletedContribution.completed_at || 'Verified'}
+• **Ledger Status:** Authenticated & SHA-256 Chained. No further action needed!`,
+          structuredData: myCompletedContribution,
+          engine: 'deterministic_contextual'
+        };
+      }
+
+      const pending = queryOne<Contribution>(
+        `SELECT * FROM contributions WHERE circle_id = ? AND member_id = ? AND status = 'pending'`,
+        [circleId, myMemberRecord?.id || '']
+      );
+
+      if (pending) {
+        return {
+          intent,
+          confidence: 0.95,
+          message: `I inspected the transaction log for ${user.name}. A checkout order (\`${pending.paypal_order_id}\`) was initiated, but PayPal capture confirmation has not yet finalized. If funds were debited, please provide your PayPal Transaction ID so I can reconcile it immediately.`,
+          engine: 'deterministic_contextual'
+        };
+      }
+
       return {
         intent,
         confidence: 0.95,
-        message: `Your current cycle contribution obligation is **$${policy?.contribution_amount || 100} ${policy?.currency || 'USD'}**, due on **${cycle?.due_date || 'Dec 1, 2026'}**. You can pay instantly using PayPal on your Member Dashboard.`,
-        actionRequired: 'NONE'
+        message: `I checked the audit ledger and gateway records for **${user.name}**, but no completed transaction was found for this cycle. Please click 'Pay Contribution' on your Member Dashboard to complete your payment via PayPal Sandbox.`,
+        actionRequired: 'NAVIGATE_CHECKOUT',
+        engine: 'deterministic_contextual'
       };
     }
+
     case 'WITHDRAWAL_REQUEST':
       return {
         intent,
-        confidence: 0.94,
-        message: `Under ROSCOPAL circle rules, voluntary departure before cycle completion requires unanimous organizer and group sign-off to protect remaining members' pot guarantees. I have flagged your request for organizer review.`,
-        actionRequired: 'NONE'
+        confidence: 0.95,
+        message: `Under ROSCOPAL rotating savings rules, voluntary departure before all cycle turns conclude requires group approval and settlement of past pot obligations to ensure remaining members' guaranteed turns are protected. I have flagged your request for the circle organizer's review.`,
+        engine: 'deterministic_contextual'
       };
+
     case 'GENERAL_FAQ':
-    default:
+    default: {
+      const text = content.toLowerCase();
+      if (text.includes('miss') || text.includes('late') || text.includes('default')) {
+        return {
+          intent: 'GENERAL_FAQ',
+          confidence: 0.96,
+          message: `**What happens if someone misses a payment in ROSCOPAL?**
+1. **Grace Window:** The member has a ${policy?.grace_days || 5}-day grace period with maximum ${policy?.max_extensions_per_member || 1} extension.
+2. **Deterministic Payout Hold:** Payout for the cycle is automatically held until 100% of required funds are collected.
+3. **Shortfall Rule:** Under ${circle?.name || 'this circle'}'s policy (${policy?.shortfall_policy || 'group_vote'}), members can vote to cover from reserves or adjust schedule without predatory interest.`,
+          engine: 'deterministic_contextual'
+        };
+      }
+
       return {
         intent: 'GENERAL_FAQ',
-        confidence: 0.90,
-        message: `I am ROSCOPAL, your automated AI circle treasurer. I coordinate recurring savings, process PayPal contributions, enforce deterministic financial safety rules, and maintain an immutable hash-chained audit ledger. How can I help you today?`,
-        actionRequired: 'NONE'
+        confidence: 0.92,
+        message: `I am **ROSCOPAL**, your AI savings circle treasurer.
+I coordinate recurring savings circles (Susu, Tanda, Chit Fund, Chama), enforce deterministic payout safety rules, verify PayPal payments, and maintain an immutable SHA-256 audit ledger.
+
+You can ask me:
+• *"How much do I owe for this cycle?"*
+• *"Why is the payout blocked?"*
+• *"How much has our circle collected?"*
+• *"Who receives the next payout?"*
+• *"Can I request a grace period extension?"*
+• *"How do I invite another member?"*`,
+        engine: 'deterministic_contextual'
       };
+    }
   }
 }

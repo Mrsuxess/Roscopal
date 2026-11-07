@@ -11,7 +11,8 @@
     "test:security": "tsx src/tests/securityAndConcurrencyTests.ts",
     "test:paypal": "tsx src/tests/paypalIntegrationTests.ts",
     "test:auth": "tsx src/tests/authAndCircleTests.ts",
-    "test": "tsx src/tests/authAndCircleTests.ts && tsx src/tests/securityAndConcurrencyTests.ts && tsx src/tests/runScenarios.ts"
+    "test:amounts": "tsx src/tests/amountMismatchAndAiTests.ts",
+    "test": "tsx src/tests/authAndCircleTests.ts && tsx src/tests/amountMismatchAndAiTests.ts && tsx src/tests/securityAndConcurrencyTests.ts && tsx src/tests/runScenarios.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

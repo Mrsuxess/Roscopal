@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { fetchInvitationPreview, joinCircleWithCode } from '../api/client';
 import { User, Circle } from '../types';
+import { formatCurrency } from '../utils/currency';
 
 interface JoinCircleModalProps {
   isOpen: boolean;
@@ -165,7 +166,7 @@ export const JoinCircleModal: React.FC<JoinCircleModalProps> = ({
                 <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
                   <span className="text-[11px] text-slate-400 block">Required Contribution</span>
                   <span className="text-base font-black text-white mt-0.5 block">
-                    ${preview.contributionAmount} {preview.currency}
+                    {formatCurrency(preview.contributionAmount, preview.currency)} {preview.currency}
                   </span>
                   <span className="text-[10px] text-slate-500">Every {preview.cadence}</span>
                 </div>
@@ -173,7 +174,7 @@ export const JoinCircleModal: React.FC<JoinCircleModalProps> = ({
                 <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
                   <span className="text-[11px] text-slate-400 block">Accumulated Pot</span>
                   <span className="text-base font-black text-emerald-400 mt-0.5 block">
-                    ${preview.targetPot} {preview.currency}
+                    {formatCurrency(preview.targetPot, preview.currency)} {preview.currency}
                   </span>
                   <span className="text-[10px] text-slate-500">{preview.maxMembers} turns total</span>
                 </div>
