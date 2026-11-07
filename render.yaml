@@ -15,8 +15,12 @@ services:
         value: 5000
       - key: NODE_ENV
         value: production
+      - key: DATA_DIR
+        value: /app/data
+      - key: DATABASE_PATH
+        value: /app/data/roscopal.sqlite
       - key: PAYPAL_MODE
-        value: demo_simulator
+        value: LIVE_SANDBOX
       - key: PAYPAL_CLIENT_ID
         sync: false
       - key: PAYPAL_CLIENT_SECRET

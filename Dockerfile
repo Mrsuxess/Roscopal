@@ -10,6 +10,8 @@ FROM node:22-alpine AS server-runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=5000
+ENV DATA_DIR=/app/data
+ENV DATABASE_PATH=/app/data/roscopal.sqlite
 
 # Copy server files
 COPY server/package*.json ./server/
