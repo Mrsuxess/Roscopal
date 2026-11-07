@@ -148,7 +148,8 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
   };
 
   const copyInviteLink = () => {
-    const link = `${window.location.origin}/join/${circle?.id || 'circle-diaspora-8'}`;
+    const code = circle?.invite_code || circle?.id || 'RSC-HERO8';
+    const link = `${window.location.origin}?invite=${code}`;
     navigator.clipboard.writeText(link);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -172,6 +173,19 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
             <p className="text-sm text-slate-400 mt-1">
               {circle?.tagline || '8 members across London, Lagos, Houston & Toronto saving $100 monthly'}
             </p>
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-slate-400 font-medium">Invitation Code:</span>
+              <span className="px-2 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-mono text-xs font-bold">
+                {circle?.invite_code || 'RSC-HERO8'}
+              </span>
+              <button
+                onClick={copyInviteLink}
+                className="text-[11px] text-slate-400 hover:text-emerald-400 flex items-center gap-1 transition-colors px-2 py-0.5 rounded bg-slate-800/80"
+              >
+                {copiedLink ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedLink ? 'Link Copied' : 'Copy Invite Link'}</span>
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">

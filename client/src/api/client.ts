@@ -1,5 +1,29 @@
 const BASE_URL = '/api';
 
+export function getAuthToken(): string | null {
+  return localStorage.getItem('roscopal_auth_token');
+}
+
+export function setAuthToken(token: string | null): void {
+  if (token) {
+    localStorage.setItem('roscopal_auth_token', token);
+  } else {
+    localStorage.removeItem('roscopal_auth_token');
+  }
+}
+
+function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...extraHeaders
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 export async function fetchHealth() {
   const res = await fetch(`${BASE_URL}/health`);
   return res.json();
@@ -10,10 +34,98 @@ export async function fetchPayPalConfig() {
   return res.json();
 }
 
+export async function registerAccount(data: {
+  name: string;
+  email: string;
+  password: string;
+  paypalEmail?: string;
+  location?: string;
+}) {
+  const res = await fetch(`${BASE_URL}/auth/register`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(data)
+  });
+  const json = await res.json();
+  if (json.token) {
+    setAuthToken(json.token);
+  }
+  return json;
+}
+
+export async function loginAccount(data: { email: string; password: string }) {
+  const res = await fetch(`${BASE_URL}/auth/login`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(data)
+  });
+  const json = await res.json();
+  if (json.token) {
+    setAuthToken(json.token);
+  }
+  return json;
+}
+
+export async function logoutAccount() {
+  try {
+    await fetch(`${BASE_URL}/auth/logout`, {
+      method: 'POST',
+      headers: getAuthHeaders()
+    });
+  } finally {
+    setAuthToken(null);
+  }
+}
+
+export async function fetchCurrentUser() {
+  const res = await fetch(`${BASE_URL}/auth/me`, {
+    headers: getAuthHeaders()
+  });
+  return res.json();
+}
+
+export async function fetchDemoPersonas() {
+  const res = await fetch(`${BASE_URL}/demo/personas`);
+  return res.json();
+}
+
+export async function fetchMyCircles(userId?: string) {
+  const url = userId ? `${BASE_URL}/circles/my?userId=${userId}` : `${BASE_URL}/circles/my`;
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
+  return res.json();
+}
+
+export async function createCircleWizard(data: any) {
+  const res = await fetch(`${BASE_URL}/circles/wizard`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(data)
+  });
+  return res.json();
+}
+
+export async function fetchInvitationPreview(code: string) {
+  const res = await fetch(`${BASE_URL}/invitations/${code}`, {
+    headers: getAuthHeaders()
+  });
+  return res.json();
+}
+
+export async function joinCircleWithCode(code: string, userId?: string) {
+  const res = await fetch(`${BASE_URL}/invitations/${code}/join`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ userId })
+  });
+  return res.json();
+}
+
 export async function createCheckoutOrder(circleId: string, cycleId: string, memberId: string, amount: number) {
   const res = await fetch(`${BASE_URL}/contributions/checkout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ circleId, cycleId, memberId, amount })
   });
   return res.json();
@@ -22,21 +134,16 @@ export async function createCheckoutOrder(circleId: string, cycleId: string, mem
 export async function captureCheckoutOrder(orderId: string, contributionId?: string) {
   const res = await fetch(`${BASE_URL}/contributions/capture`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ orderId, contributionId })
   });
-  return res.json();
-}
-
-export async function fetchCurrentUser() {
-  const res = await fetch(`${BASE_URL}/auth/me`);
   return res.json();
 }
 
 export async function switchUser(userId: string) {
   const res = await fetch(`${BASE_URL}/auth/switch`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ userId })
   });
   return res.json();

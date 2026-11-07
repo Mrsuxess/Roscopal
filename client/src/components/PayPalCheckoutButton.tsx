@@ -206,6 +206,12 @@ export const PayPalCheckoutButton: React.FC<PayPalCheckoutButtonProps> = ({
         )}
       </div>
 
+      {/* Sandbox Buyer Account Guide */}
+      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
+        <span className="font-semibold text-slate-300 block mb-0.5">💡 PayPal Sandbox Testing Guide:</span>
+        To test the official PayPal Smart Button, log into the popup using a <span className="text-emerald-400 font-semibold">Sandbox Personal Account</span> (e.g. from PayPal Developer Dashboard &gt; Sandbox Accounts). Do not use the merchant business email or live credentials. Or click the direct button below:
+      </div>
+
       {/* Fallback / Direct Sandbox Button */}
       <button
         onClick={handleDirectServerCheckout}

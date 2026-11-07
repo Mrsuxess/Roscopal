@@ -299,7 +299,45 @@ export async function initDatabase(): Promise<SqlJsDatabase> {
       processed INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS invitations (
+      id TEXT PRIMARY KEY,
+      circle_id TEXT NOT NULL,
+      code TEXT UNIQUE NOT NULL,
+      created_by TEXT NOT NULL,
+      max_uses INTEGER NOT NULL DEFAULT 10,
+      uses_count INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (circle_id) REFERENCES circles(id),
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
   `);
+
+  // Safe incremental column migrations
+  const safeAlter = (sql: string) => {
+    try {
+      db.run(sql);
+    } catch (e) {
+      // Column already exists
+    }
+  };
+
+  safeAlter(`ALTER TABLE users ADD COLUMN password_hash TEXT`);
+  safeAlter(`ALTER TABLE circles ADD COLUMN invite_code TEXT`);
+  safeAlter(`ALTER TABLE circles ADD COLUMN tradition TEXT DEFAULT 'General'`);
+  safeAlter(`ALTER TABLE circles ADD COLUMN country TEXT DEFAULT 'US'`);
+  safeAlter(`ALTER TABLE circles ADD COLUMN is_public INTEGER DEFAULT 0`);
+  safeAlter(`ALTER TABLE circles ADD COLUMN description TEXT`);
 
   saveDb();
   return db;

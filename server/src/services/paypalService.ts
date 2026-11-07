@@ -280,7 +280,8 @@ export async function getPayPalOrderDetails(orderId: string): Promise<any> {
   }
 
   try {
-    const response = await fetch(`${config.baseUrl}/v2/checkout/orders/${orderId}`, {
+    const cfg = getConfig();
+    const response = await fetch(`${cfg.baseUrl}/v2/checkout/orders/${orderId}`, {
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'

@@ -43,11 +43,29 @@ export interface Circle {
   id: string;
   name: string;
   tagline?: string;
+  description?: string;
+  tradition?: string;
+  country?: string;
+  is_public?: number;
+  invite_code?: string;
   organizer_id: string;
   status: CircleStatus;
   current_cycle_number: number;
   created_at: string;
   policy?: CirclePolicy;
+  membersCount?: number;
+}
+
+export interface Invitation {
+  id: string;
+  circle_id: string;
+  code: string;
+  created_by: string;
+  max_uses: number;
+  uses_count: number;
+  expires_at?: string;
+  status: 'active' | 'expired' | 'revoked';
+  created_at: string;
 }
 
 export interface CircleMember {
@@ -113,7 +131,7 @@ export interface LedgerEntry {
   entry_index: number;
   circle_id: string;
   timestamp: string;
-  event_type: 'CONTRIBUTION_RECEIVED' | 'PAYOUT_INITIATED' | 'PAYOUT_COMPLETED' | 'TURN_SWAP' | 'EXTENSION_GRANTED' | 'DISPUTE_LOGGED' | 'GENESIS';
+  event_type: 'CONTRIBUTION_RECEIVED' | 'PAYOUT_INITIATED' | 'PAYOUT_COMPLETED' | 'TURN_SWAP' | 'EXTENSION_GRANTED' | 'DISPUTE_LOGGED' | 'GENESIS' | 'CIRCLE_INITIALIZED' | 'MEMBER_JOINED' | 'CONTRIBUTION_REVERSED';
   member_name: string;
   recipient_name: string;
   cycle_number: number;

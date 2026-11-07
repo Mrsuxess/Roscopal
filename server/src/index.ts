@@ -24,6 +24,8 @@ import {
 import { processAgentMessage } from './agents/orchestrator';
 import { runAllScenarios } from './tests/runScenarios';
 import { User, Circle, CirclePolicy, Cycle, CircleMember, Contribution } from './types';
+import { registerUser, loginUser, validateSession, deleteSession } from './services/authService';
+import { createCircleWithWizard, getUserCircles, getInvitationDetails, joinCircleWithInvite } from './services/circleService';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -83,17 +85,53 @@ app.get('/api/paypal/config', (req: Request, res: Response) => {
 });
 
 /**
- * Auth & Personas
+ * Auth & Session Management
  */
+app.post('/api/auth/register', (req: Request, res: Response) => {
+  try {
+    const { name, email, password, paypalEmail, location } = req.body;
+    const result = registerUser({ name, email, password, paypalEmail, location });
+    res.status(201).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    const result = loginUser(email, password);
+    res.json(result);
+  } catch (err: any) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const token = req.headers.authorization?.replace('Bearer ', '') || (req.headers['x-session-token'] as string);
+  if (token) {
+    deleteSession(token);
+  }
+  res.json({ success: true, message: 'Logged out successfully' });
+});
+
 app.get('/api/auth/me', (req: Request, res: Response) => {
-  const user = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [currentUserId]) ||
-    queryOne<User>(`SELECT * FROM users WHERE id = 'usr-ada'`);
-  res.json({ user, currentUserId });
+  const token = req.headers.authorization?.replace('Bearer ', '') || (req.headers['x-session-token'] as string);
+  const sessionUser = token ? validateSession(token) : null;
+  
+  if (sessionUser) {
+    return res.json({ user: sessionUser, currentUserId: sessionUser.id, isAuthenticated: true });
+  }
+
+  // Fallback to active demo persona
+  const user = queryOne<User>(`SELECT id, name, email, role, paypal_email, location, avatar_url FROM users WHERE id = ?`, [currentUserId]) ||
+    queryOne<User>(`SELECT id, name, email, role, paypal_email, location, avatar_url FROM users WHERE id = 'usr-ada'`);
+  res.json({ user, currentUserId, isAuthenticated: false, isDemo: true });
 });
 
 app.post('/api/auth/switch', (req: Request, res: Response) => {
   const { userId } = req.body;
-  const user = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [userId]);
+  const user = queryOne<User>(`SELECT id, name, email, role, paypal_email, location, avatar_url FROM users WHERE id = ?`, [userId]);
   if (!user) {
     return res.status(404).json({ error: 'User persona not found' });
   }
@@ -101,9 +139,73 @@ app.post('/api/auth/switch', (req: Request, res: Response) => {
   res.json({ success: true, user });
 });
 
+app.get('/api/demo/personas', (req: Request, res: Response) => {
+  const demoUsers = queryAll<User>(
+    `SELECT id, name, email, role, paypal_email, location FROM users WHERE id LIKE 'usr-%' ORDER BY role DESC, name ASC`
+  );
+  res.json({ personas: demoUsers });
+});
+
+app.post('/api/demo/reset', async (req: Request, res: Response) => {
+  try {
+    await seedHeroDemoData();
+    currentUserId = 'usr-ada';
+    res.json({ success: true, message: 'Hero demonstration scenario reset successfully.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/users', (req: Request, res: Response) => {
-  const users = queryAll<User>(`SELECT * FROM users ORDER BY role DESC, name ASC`);
+  const users = queryAll<User>(`SELECT id, name, email, role, paypal_email, location FROM users ORDER BY role DESC, name ASC`);
   res.json({ users });
+});
+
+/**
+ * Circle Wizard & Joining Routes
+ */
+app.post('/api/circles/wizard', (req: Request, res: Response) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || (req.headers['x-session-token'] as string);
+    const sessionUser = token ? validateSession(token) : null;
+    const organizerId = sessionUser?.id || req.body.organizerId || currentUserId;
+
+    const result = createCircleWithWizard(organizerId, req.body);
+    res.status(201).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/circles/my', (req: Request, res: Response) => {
+  const token = req.headers.authorization?.replace('Bearer ', '') || (req.headers['x-session-token'] as string);
+  const sessionUser = token ? validateSession(token) : null;
+  const userId = sessionUser?.id || (req.query.userId as string) || currentUserId;
+
+  const circles = getUserCircles(userId);
+  res.json({ circles });
+});
+
+app.get('/api/invitations/:code', (req: Request, res: Response) => {
+  try {
+    const preview = getInvitationDetails(req.params.code);
+    res.json(preview);
+  } catch (err: any) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.post('/api/invitations/:code/join', (req: Request, res: Response) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || (req.headers['x-session-token'] as string);
+    const sessionUser = token ? validateSession(token) : null;
+    const userId = sessionUser?.id || req.body.userId || currentUserId;
+
+    const result = joinCircleWithInvite(req.params.code, userId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 /**

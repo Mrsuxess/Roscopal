@@ -9,7 +9,9 @@
     "start": "tsx src/index.ts",
     "test:scenarios": "tsx src/tests/runScenarios.ts",
     "test:security": "tsx src/tests/securityAndConcurrencyTests.ts",
-    "test:paypal": "tsx src/tests/paypalIntegrationTests.ts"
+    "test:paypal": "tsx src/tests/paypalIntegrationTests.ts",
+    "test:auth": "tsx src/tests/authAndCircleTests.ts",
+    "test": "tsx src/tests/authAndCircleTests.ts && tsx src/tests/securityAndConcurrencyTests.ts && tsx src/tests/runScenarios.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
