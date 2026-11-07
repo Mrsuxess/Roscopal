@@ -155,8 +155,8 @@ export async function createPayPalOrder(params: CreateOrderParams): Promise<{
           brand_name: 'ROSCOPAL',
           landing_page: 'NO_PREFERENCE',
           user_action: 'PAY_NOW',
-          return_url: params.returnUrl || 'http://localhost:5173/payment-success',
-          cancel_url: params.cancelUrl || 'http://localhost:5173/payment-cancel'
+          return_url: params.returnUrl || (process.env.APP_BASE_URL ? `${process.env.APP_BASE_URL}/payment-success` : 'http://localhost:5173/payment-success'),
+          cancel_url: params.cancelUrl || (process.env.APP_BASE_URL ? `${process.env.APP_BASE_URL}/payment-cancel` : 'http://localhost:5173/payment-cancel')
         }
       })
     });

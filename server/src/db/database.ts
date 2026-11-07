@@ -4,8 +4,8 @@ import path from 'path';
 
 let dbInstance: SqlJsDatabase | null = null;
 let inTransaction = false;
-const DATA_DIR = path.resolve(__dirname, '../../data');
-const DB_FILE = path.join(DATA_DIR, 'roscopal.sqlite');
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../data');
+const DB_FILE = process.env.DATABASE_PATH || path.join(DATA_DIR, 'roscopal.sqlite');
 
 export async function getDb(): Promise<SqlJsDatabase> {
   if (dbInstance) return dbInstance;
