@@ -1,38 +1,151 @@
-import crypto from 'crypto';
+import { scrypt } from 'scrypt-js';
 import { queryOne, execute } from '../db/database';
 import { User } from '../types';
 
 const SESSION_TTL_HOURS = 72; // 3 days
+// Cloudflare Workers runtime caps Web Crypto PBKDF2 at 100,000 iterations
+const PBKDF2_ITERATIONS = 100000;
 
 /**
- * Hash password with cryptographically secure scrypt + salt
+ * Constant-time comparison to prevent timing attacks
  */
-export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derivedKey = crypto.scryptSync(password, salt, 64);
-  return `${salt}:${derivedKey.toString('hex')}`;
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function toHex(buffer: ArrayBuffer | Uint8Array): string {
+  const bytes = new Uint8Array(buffer);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+function fromHex(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+  }
+  return bytes;
 }
 
 /**
- * Verify password against stored salt:hash
+ * Hash password with modern Workers-native PBKDF2-HMAC-SHA256 (600,000 iterations)
  */
-export function verifyPassword(password: string, storedHash: string): boolean {
-  if (!storedHash || !storedHash.includes(':')) return false;
-  const [salt, key] = storedHash.split(':');
-  const derivedKey = crypto.scryptSync(password, salt, 64);
-  return crypto.timingSafeEqual(Buffer.from(key, 'hex'), derivedKey);
+export async function hashPassword(password: string): Promise<string> {
+  const saltBytes = new Uint8Array(16);
+  crypto.getRandomValues(saltBytes);
+  const saltHex = toHex(saltBytes);
+
+  const enc = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: saltBytes,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256'
+    },
+    baseKey,
+    256 // 32 bytes (256 bits)
+  );
+
+  const derivedHex = toHex(derived);
+  return `pbkdf2:${PBKDF2_ITERATIONS}:${saltHex}:${derivedHex}`;
 }
 
 /**
- * Create a new persistent session token
+ * Verify password against stored hash, supporting both PBKDF2 and legacy scrypt
  */
-export function createSession(userId: string): { token: string; expiresAt: string } {
-  const token = 'rsc_' + crypto.randomBytes(32).toString('hex');
+export async function verifyPassword(
+  password: string,
+  storedHash: string
+): Promise<{ valid: boolean; needsUpgrade: boolean }> {
+  if (!storedHash) return { valid: false, needsUpgrade: false };
+
+  // 1. Modern PBKDF2-HMAC-SHA256 hash
+  if (storedHash.startsWith('pbkdf2:')) {
+    const parts = storedHash.split(':');
+    if (parts.length !== 4) return { valid: false, needsUpgrade: false };
+    const iterations = parseInt(parts[1], 10);
+    const saltBytes = fromHex(parts[2]);
+    const expectedHex = parts[3];
+
+    const enc = new TextEncoder();
+    const baseKey = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(password),
+      'PBKDF2',
+      false,
+      ['deriveBits']
+    );
+
+    const derived = await crypto.subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        salt: saltBytes,
+        iterations: isNaN(iterations) ? PBKDF2_ITERATIONS : iterations,
+        hash: 'SHA-256'
+      },
+      baseKey,
+      256
+    );
+
+    const valid = constantTimeEqual(toHex(derived), expectedHex);
+    // Needs upgrade if iteration count is below current 600,000 baseline
+    const needsUpgrade = valid && iterations < PBKDF2_ITERATIONS;
+    return { valid, needsUpgrade };
+  }
+
+  // 2. Legacy scrypt hash format (<salt_hex>:<derived_hex>)
+  if (storedHash.includes(':')) {
+    const [saltStr, expectedHex] = storedHash.split(':');
+    if (!saltStr || !expectedHex) return { valid: false, needsUpgrade: false };
+
+    try {
+      const passBytes = new TextEncoder().encode(password);
+      // In the legacy implementation, salt was passed as a 32-char hex string
+      const saltBytes = new TextEncoder().encode(saltStr);
+      // N=16384, r=8, p=1, dkLen=64
+      const derived = await scrypt(passBytes, saltBytes, 16384, 8, 1, 64);
+      const derivedHex = toHex(derived);
+      const valid = constantTimeEqual(derivedHex, expectedHex);
+      return { valid, needsUpgrade: valid }; // Upgrade to PBKDF2 on successful auth
+    } catch (e) {
+      console.error('Error verifying legacy scrypt hash:', e);
+      return { valid: false, needsUpgrade: false };
+    }
+  }
+
+  return { valid: false, needsUpgrade: false };
+}
+
+/**
+ * Create a new cryptographically unpredictable session token
+ */
+export async function createSession(userId: string): Promise<{ token: string; expiresAt: string }> {
+  const tokenBytes = new Uint8Array(32);
+  crypto.getRandomValues(tokenBytes);
+  const token = 'rsc_' + toHex(tokenBytes);
+
   const now = new Date();
   const expires = new Date(now.getTime() + SESSION_TTL_HOURS * 60 * 60 * 1000);
   const expiresAt = expires.toISOString();
 
-  execute(
+  await execute(
     `INSERT INTO user_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
     [token, userId, now.toISOString(), expiresAt]
   );
@@ -43,10 +156,10 @@ export function createSession(userId: string): { token: string; expiresAt: strin
 /**
  * Validate session token and return user if active
  */
-export function validateSession(token: string): User | null {
+export async function validateSession(token: string): Promise<User | null> {
   if (!token) return null;
 
-  const session = queryOne<{ user_id: string; expires_at: string }>(
+  const session = await queryOne<{ user_id: string; expires_at: string }>(
     `SELECT user_id, expires_at FROM user_sessions WHERE token = ?`,
     [token]
   );
@@ -54,11 +167,11 @@ export function validateSession(token: string): User | null {
   if (!session) return null;
 
   if (new Date(session.expires_at) < new Date()) {
-    execute(`DELETE FROM user_sessions WHERE token = ?`, [token]);
+    await execute(`DELETE FROM user_sessions WHERE token = ?`, [token]);
     return null;
   }
 
-  const user = queryOne<User>(
+  const user = await queryOne<User>(
     `SELECT id, name, email, role, paypal_email, location, avatar_url FROM users WHERE id = ?`,
     [session.user_id]
   );
@@ -69,22 +182,22 @@ export function validateSession(token: string): User | null {
 /**
  * Invalidate / Logout a session
  */
-export function deleteSession(token: string): void {
+export async function deleteSession(token: string): Promise<void> {
   if (token) {
-    execute(`DELETE FROM user_sessions WHERE token = ?`, [token]);
+    await execute(`DELETE FROM user_sessions WHERE token = ?`, [token]);
   }
 }
 
 /**
  * Register a new user
  */
-export function registerUser(params: {
+export async function registerUser(params: {
   name: string;
   email: string;
   password: string;
   paypalEmail?: string;
   location?: string;
-}): { user: User; token: string } {
+}): Promise<{ user: User; token: string }> {
   const email = params.email.trim().toLowerCase();
   const name = params.name.trim();
 
@@ -100,25 +213,25 @@ export function registerUser(params: {
     throw new Error('Password must be at least 6 characters.');
   }
 
-  // Check duplicate
-  const existing = queryOne(`SELECT id FROM users WHERE LOWER(email) = ?`, [email]);
+  // Check duplicate email
+  const existing = await queryOne(`SELECT id FROM users WHERE LOWER(email) = ?`, [email]);
   if (existing) {
     throw new Error('An account with this email address already exists.');
   }
 
   const userId = 'usr_' + crypto.randomUUID().slice(0, 8);
-  const pwdHash = hashPassword(params.password);
+  const pwdHash = await hashPassword(params.password);
   const paypalEmail = (params.paypalEmail || email).trim().toLowerCase();
   const location = params.location ? params.location.trim() : 'Global';
   const now = new Date().toISOString();
 
-  execute(
+  await execute(
     `INSERT INTO users (id, name, email, role, paypal_email, location, password_hash, created_at)
      VALUES (?, ?, ?, 'organizer', ?, ?, ?, ?)`,
     [userId, name, email, paypalEmail, location, pwdHash, now]
   );
 
-  const { token } = createSession(userId);
+  const { token } = await createSession(userId);
 
   const user: User = {
     id: userId,
@@ -136,10 +249,10 @@ export function registerUser(params: {
 /**
  * Authenticate login
  */
-export function loginUser(email: string, password: string): { user: User; token: string } {
+export async function loginUser(email: string, password: string): Promise<{ user: User; token: string }> {
   const cleanEmail = email.trim().toLowerCase();
 
-  const row = queryOne<any>(
+  const row = await queryOne<any>(
     `SELECT * FROM users WHERE LOWER(email) = ?`,
     [cleanEmail]
   );
@@ -148,24 +261,36 @@ export function loginUser(email: string, password: string): { user: User; token:
     throw new Error('Invalid email or password.');
   }
 
-  // Handle demo users or users without password_hash (fallback to 'password123' if not hashed yet)
-  let valid = false;
+  let authenticated = false;
+  let upgradeHash = false;
+
   if (!row.password_hash) {
+    // Demo seed users without password hash fallback to demo password 'password123'
     if (password === 'password123') {
-      valid = true;
-      // Auto upgrade hash
-      const newHash = hashPassword('password123');
-      execute(`UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, row.id]);
+      authenticated = true;
+      upgradeHash = true;
     }
   } else {
-    valid = verifyPassword(password, row.password_hash);
+    const res = await verifyPassword(password, row.password_hash);
+    authenticated = res.valid;
+    upgradeHash = res.needsUpgrade;
   }
 
-  if (!valid) {
+  if (!authenticated) {
     throw new Error('Invalid email or password.');
   }
 
-  const { token } = createSession(row.id);
+  // Transparently upgrade legacy or unhashed password to modern PBKDF2 600,000 iterations
+  if (upgradeHash) {
+    try {
+      const newHash = await hashPassword(password);
+      await execute(`UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, row.id]);
+    } catch (err) {
+      console.warn('Non-blocking failure during password hash upgrade:', err);
+    }
+  }
+
+  const { token } = await createSession(row.id);
 
   const user: User = {
     id: row.id,

@@ -1,5 +1,4 @@
-import crypto from 'crypto';
-import { queryOne, queryAll, execute, transaction } from '../db/database';
+import { queryOne, queryAll, execute } from '../db/database';
 import { recordLedgerEntry } from './auditLedger';
 import { Circle, CirclePolicy, CircleMember, Cycle, User, Invitation } from '../types';
 
@@ -30,11 +29,11 @@ export function generateInviteCode(): string {
   return `RSC-${code}`;
 }
 
-export function createCircleWithWizard(
+export async function createCircleWithWizard(
   organizerId: string,
   input: CreateCircleWizardInput
-): { circle: Circle; inviteCode: string } {
-  const organizer = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [organizerId]);
+): Promise<{ circle: Circle; inviteCode: string }> {
+  const organizer = await queryOne<User>(`SELECT * FROM users WHERE id = ?`, [organizerId]);
   if (!organizer) {
     throw new Error('Organizer user not found.');
   }
@@ -71,110 +70,106 @@ export function createCircleWithWizard(
   const inviteCode = generateInviteCode();
   const now = new Date().toISOString();
 
-  transaction(() => {
-    // 1. Create Circle
-    execute(
-      `INSERT INTO circles (
-        id, name, tagline, description, tradition, country, is_public,
-        invite_code, organizer_id, status, current_cycle_number, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?)`,
-      [circleId, name, tagline, description, tradition, country, isPublic, inviteCode, organizerId, now]
-    );
+  // 1. Create Circle
+  await execute(
+    `INSERT INTO circles (
+      id, name, tagline, description, tradition, country, is_public,
+      invite_code, organizer_id, status, current_cycle_number, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?)`,
+    [circleId, name, tagline, description, tradition, country, isPublic, inviteCode, organizerId, now]
+  );
 
-    // 2. Create Circle Policy
-    execute(
-      `INSERT INTO circle_policies (
-        circle_id, currency, contribution_amount, cadence, start_date,
-        total_cycles, members_count, order_rule, grace_days, payout_condition,
-        shortfall_policy, max_extensions_per_member
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-      [
-        circleId,
-        currency,
-        contributionAmount,
-        cadence,
-        startDate,
-        membersCount,
-        membersCount,
-        orderRule,
-        graceDays,
-        payoutCondition,
-        shortfallPolicy
-      ]
-    );
-
-    // 3. Add Organizer as Member #1
-    const organizerMemberId = 'mem-' + crypto.randomUUID().slice(0, 8);
-    execute(
-      `INSERT INTO circle_members (
-        id, circle_id, user_id, turn_order, status, joined_at
-      ) VALUES (?, ?, ?, 1, 'active', ?)`,
-      [organizerMemberId, circleId, organizerId, now]
-    );
-
-    // 4. Generate Cycles for all turns
-    const targetPotAmount = contributionAmount * membersCount;
-    let cycleDate = new Date(startDate);
-
-    for (let c = 1; c <= membersCount; c++) {
-      const cycleId = `cycle-${circleId}-${c}`;
-      const dueDate = cycleDate.toISOString();
-      const payoutDate = new Date(cycleDate.getTime() + graceDays * 86400000).toISOString();
-      // Cycle 1 recipient is member 1 (organizer) by default until members choose turns
-      const recipientMemberId = c === 1 ? organizerMemberId : '';
-
-      execute(
-        `INSERT INTO cycles (
-          id, circle_id, cycle_number, recipient_member_id, due_date,
-          payout_date, status, target_pot_amount, collected_amount, paid_out_amount
-        ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 0, 0)`,
-        [cycleId, circleId, c, recipientMemberId, dueDate, payoutDate, targetPotAmount]
-      );
-
-      // Advance date based on cadence
-      if (cadence === 'weekly') {
-        cycleDate = new Date(cycleDate.getTime() + 7 * 86400000);
-      } else if (cadence === 'biweekly') {
-        cycleDate = new Date(cycleDate.getTime() + 14 * 86400000);
-      } else {
-        cycleDate = new Date(cycleDate.getTime() + 30 * 86400000);
-      }
-    }
-
-    // 5. Create Invitation Record
-    const invitationId = 'inv-' + crypto.randomUUID().slice(0, 8);
-    execute(
-      `INSERT INTO invitations (
-        id, circle_id, code, created_by, max_uses, uses_count, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, 0, 'active', ?)`,
-      [invitationId, circleId, inviteCode, organizerId, membersCount - 1, now]
-    );
-
-    // 6. Record Genesis Ledger Entry
-    recordLedgerEntry({
+  // 2. Create Circle Policy
+  await execute(
+    `INSERT INTO circle_policies (
+      circle_id, currency, contribution_amount, cadence, start_date,
+      total_cycles, members_count, order_rule, grace_days, payout_condition,
+      shortfall_policy, max_extensions_per_member
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    [
       circleId,
-      eventType: 'CIRCLE_INITIALIZED',
-      memberName: organizer.name,
-      recipientName: 'Community Pot',
-      cycleNumber: 1,
-      amount: targetPotAmount,
       currency,
-      paymentStatus: 'INITIALIZED',
-      paypalRef: `GENESIS-${circleId}`,
-      auditStatus: 'VERIFIED',
-      metadata: {
-        circleName: name,
-        tradition,
-        cadence,
-        membersCount,
-        contributionAmount,
-        organizerId
-      }
-    });
+      contributionAmount,
+      cadence,
+      startDate,
+      membersCount,
+      membersCount,
+      orderRule,
+      graceDays,
+      payoutCondition,
+      shortfallPolicy
+    ]
+  );
+
+  // 3. Add Organizer as Member #1
+  const organizerMemberId = 'mem-' + crypto.randomUUID().slice(0, 8);
+  await execute(
+    `INSERT INTO circle_members (
+      id, circle_id, user_id, turn_order, status, joined_at
+    ) VALUES (?, ?, ?, 1, 'active', ?)`,
+    [organizerMemberId, circleId, organizerId, now]
+  );
+
+  // 4. Generate Cycles for all turns
+  const targetPotAmount = contributionAmount * membersCount;
+  let cycleDate = new Date(startDate);
+
+  for (let c = 1; c <= membersCount; c++) {
+    const cycleId = `cycle-${circleId}-${c}`;
+    const dueDate = cycleDate.toISOString();
+    const payoutDate = new Date(cycleDate.getTime() + graceDays * 86400000).toISOString();
+    const recipientMemberId = organizerMemberId;
+
+    await execute(
+      `INSERT INTO cycles (
+        id, circle_id, cycle_number, recipient_member_id, due_date,
+        payout_date, status, target_pot_amount, collected_amount, paid_out_amount
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 0, 0)`,
+      [cycleId, circleId, c, recipientMemberId, dueDate, payoutDate, targetPotAmount]
+    );
+
+    if (cadence === 'weekly') {
+      cycleDate = new Date(cycleDate.getTime() + 7 * 86400000);
+    } else if (cadence === 'biweekly') {
+      cycleDate = new Date(cycleDate.getTime() + 14 * 86400000);
+    } else {
+      cycleDate = new Date(cycleDate.getTime() + 30 * 86400000);
+    }
+  }
+
+  // 5. Create Invitation Record
+  const invitationId = 'inv-' + crypto.randomUUID().slice(0, 8);
+  await execute(
+    `INSERT INTO invitations (
+      id, circle_id, code, created_by, max_uses, uses_count, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, 0, 'active', ?)`,
+    [invitationId, circleId, inviteCode, organizerId, membersCount - 1, now]
+  );
+
+  // 6. Record Genesis Ledger Entry
+  await recordLedgerEntry({
+    circleId,
+    eventType: 'CIRCLE_INITIALIZED',
+    memberName: organizer.name,
+    recipientName: 'Community Pot',
+    cycleNumber: 1,
+    amount: targetPotAmount,
+    currency,
+    paymentStatus: 'INITIALIZED',
+    paypalRef: `GENESIS-${circleId}`,
+    auditStatus: 'VERIFIED',
+    metadata: {
+      circleName: name,
+      tradition,
+      cadence,
+      membersCount,
+      contributionAmount,
+      organizerId
+    }
   });
 
-  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId])!;
-  circle.policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId])!;
+  const circle = (await queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]))!;
+  circle.policy = (await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]))!;
   circle.membersCount = 1;
 
   return { circle, inviteCode };
@@ -183,8 +178,8 @@ export function createCircleWithWizard(
 /**
  * Get all circles for a specific user (as organizer or member)
  */
-export function getUserCircles(userId: string): Circle[] {
-  const circles = queryAll<Circle>(
+export async function getUserCircles(userId: string): Promise<Circle[]> {
+  const circles = await queryAll<Circle>(
     `SELECT DISTINCT c.*,
        (SELECT COUNT(*) FROM circle_members cm WHERE cm.circle_id = c.id AND cm.status != 'departed') as membersCount
      FROM circles c
@@ -195,7 +190,7 @@ export function getUserCircles(userId: string): Circle[] {
   );
 
   for (const c of circles) {
-    c.policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [c.id]) || undefined;
+    c.policy = (await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [c.id])) || undefined;
   }
 
   return circles;
@@ -204,33 +199,32 @@ export function getUserCircles(userId: string): Circle[] {
 /**
  * Preview circle invitation details
  */
-export function getInvitationDetails(code: string) {
+export async function getInvitationDetails(code: string) {
   const cleanCode = code.trim().toUpperCase();
 
-  const invitation = queryOne<Invitation>(
+  const invitation = await queryOne<Invitation>(
     `SELECT * FROM invitations WHERE code = ? AND status = 'active'`,
     [cleanCode]
   );
 
   if (!invitation) {
-    // Try matching circle.invite_code
-    const circle = queryOne<Circle>(`SELECT * FROM circles WHERE UPPER(invite_code) = ?`, [cleanCode]);
+    const circle = await queryOne<Circle>(`SELECT * FROM circles WHERE UPPER(invite_code) = ?`, [cleanCode]);
     if (!circle) {
       throw new Error(`Invitation code "${cleanCode}" is invalid or does not exist.`);
     }
-    return getCircleInvitePreview(circle.id, cleanCode);
+    return await getCircleInvitePreview(circle.id, cleanCode);
   }
 
-  return getCircleInvitePreview(invitation.circle_id, cleanCode);
+  return await getCircleInvitePreview(invitation.circle_id, cleanCode);
 }
 
-function getCircleInvitePreview(circleId: string, inviteCode: string) {
-  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
+async function getCircleInvitePreview(circleId: string, inviteCode: string) {
+  const circle = await queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
   if (!circle) throw new Error('Circle not found.');
 
-  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
-  const organizer = queryOne<User>(`SELECT id, name, location FROM users WHERE id = ?`, [circle.organizer_id]);
-  const members = queryAll<CircleMember>(`SELECT * FROM circle_members WHERE circle_id = ? AND status != 'departed'`, [circleId]);
+  const policy = await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
+  const organizer = await queryOne<User>(`SELECT id, name, location FROM users WHERE id = ?`, [circle.organizer_id]);
+  const members = await queryAll<CircleMember>(`SELECT * FROM circle_members WHERE circle_id = ? AND status != 'departed'`, [circleId]);
 
   const maxMembers = policy ? policy.members_count : 8;
   const currentMembersCount = members.length;
@@ -263,11 +257,11 @@ function getCircleInvitePreview(circleId: string, inviteCode: string) {
 /**
  * Join a circle with an invite code
  */
-export function joinCircleWithInvite(code: string, userId: string): { member: CircleMember; circle: Circle } {
-  const user = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [userId]);
+export async function joinCircleWithInvite(code: string, userId: string): Promise<{ member: CircleMember; circle: Circle }> {
+  const user = await queryOne<User>(`SELECT * FROM users WHERE id = ?`, [userId]);
   if (!user) throw new Error('User not found.');
 
-  const preview = getInvitationDetails(code);
+  const preview = await getInvitationDetails(code);
 
   if (preview.isFull) {
     throw new Error('This savings circle has already reached its maximum member capacity.');
@@ -278,7 +272,7 @@ export function joinCircleWithInvite(code: string, userId: string): { member: Ci
   }
 
   // Prevent duplicate membership
-  const existingMember = queryOne<CircleMember>(
+  const existingMember = await queryOne<CircleMember>(
     `SELECT * FROM circle_members WHERE circle_id = ? AND user_id = ? AND status != 'departed'`,
     [preview.circleId, userId]
   );
@@ -286,7 +280,7 @@ export function joinCircleWithInvite(code: string, userId: string): { member: Ci
     throw new Error('You are already a member of this savings circle.');
   }
 
-  const existingMembers = queryAll<CircleMember>(
+  const existingMembers = await queryAll<CircleMember>(
     `SELECT turn_order FROM circle_members WHERE circle_id = ? ORDER BY turn_order ASC`,
     [preview.circleId]
   );
@@ -301,50 +295,48 @@ export function joinCircleWithInvite(code: string, userId: string): { member: Ci
   const memberId = 'mem-' + crypto.randomUUID().slice(0, 8);
   const now = new Date().toISOString();
 
-  transaction(() => {
-    // Insert new member
-    execute(
-      `INSERT INTO circle_members (id, circle_id, user_id, turn_order, status, joined_at)
-       VALUES (?, ?, ?, ?, 'active', ?)`,
-      [memberId, preview.circleId, userId, nextTurn, now]
-    );
+  // Insert new member
+  await execute(
+    `INSERT INTO circle_members (id, circle_id, user_id, turn_order, status, joined_at)
+     VALUES (?, ?, ?, ?, 'active', ?)`,
+    [memberId, preview.circleId, userId, nextTurn, now]
+  );
 
-    // Update cycle recipient for this member's turn
-    execute(
-      `UPDATE cycles SET recipient_member_id = ? WHERE circle_id = ? AND cycle_number = ? AND (recipient_member_id IS NULL OR recipient_member_id = '')`,
-      [memberId, preview.circleId, nextTurn]
-    );
+  // Update cycle recipient for this member's turn
+  await execute(
+    `UPDATE cycles SET recipient_member_id = ? WHERE circle_id = ? AND cycle_number = ?`,
+    [memberId, preview.circleId, nextTurn]
+  );
 
-    // Increment invitation usage
-    execute(
-      `UPDATE invitations SET uses_count = uses_count + 1 WHERE code = ?`,
-      [code.trim().toUpperCase()]
-    );
+  // Increment invitation usage
+  await execute(
+    `UPDATE invitations SET uses_count = uses_count + 1 WHERE code = ?`,
+    [code.trim().toUpperCase()]
+  );
 
-    // Record in SHA-256 ledger
-    recordLedgerEntry({
-      circleId: preview.circleId,
-      eventType: 'MEMBER_JOINED',
-      memberName: user.name,
-      recipientName: 'Community Pot',
-      cycleNumber: 1,
-      amount: 0,
-      currency: preview.currency,
-      paymentStatus: 'ACTIVE',
-      paypalRef: `JOIN-${memberId}`,
-      auditStatus: 'VERIFIED',
-      metadata: {
-        userId,
-        turnOrder: nextTurn,
-        userEmail: user.email,
-        inviteCode: code
-      }
-    });
+  // Record in SHA-256 ledger
+  await recordLedgerEntry({
+    circleId: preview.circleId,
+    eventType: 'MEMBER_JOINED',
+    memberName: user.name,
+    recipientName: 'Community Pot',
+    cycleNumber: 1,
+    amount: 0,
+    currency: preview.currency,
+    paymentStatus: 'ACTIVE',
+    paypalRef: `JOIN-${memberId}`,
+    auditStatus: 'VERIFIED',
+    metadata: {
+      userId,
+      turnOrder: nextTurn,
+      userEmail: user.email,
+      inviteCode: code
+    }
   });
 
-  const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId])!;
-  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [preview.circleId])!;
-  circle.policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [preview.circleId]) || undefined;
+  const member = (await queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]))!;
+  const circle = (await queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [preview.circleId]))!;
+  circle.policy = (await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [preview.circleId])) || undefined;
 
   return { member, circle };
 }

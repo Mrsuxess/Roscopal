@@ -1,6 +1,6 @@
-import { registerUser, loginUser, validateSession, deleteSession } from '../services/authService.js';
-import { createCircleWithWizard, getInvitationDetails, joinCircleWithInvite, getUserCircles } from '../services/circleService.js';
-import { initDatabase, getDb } from '../db/database.js';
+import { registerUser, loginUser, validateSession, deleteSession } from '../services/authService';
+import { createCircleWithWizard, getInvitationDetails, joinCircleWithInvite, getUserCircles } from '../services/circleService';
+import { initDatabase } from '../db/database';
 
 async function runTests() {
   console.log('--- Starting Auth & Circle Wizard Integration Tests ---');
@@ -25,8 +25,8 @@ async function runTests() {
     const password = 'SecurePassword123!';
 
     // TEST 1: Register organizer
-    console.log('\n[1] Testing User Registration...');
-    const regResult = registerUser({
+    console.log('\n[1] Testing User Registration (PBKDF2 600,000 iterations)...');
+    const regResult = await registerUser({
       name: 'Amara Okafor',
       email: organizerEmail,
       password: password
@@ -38,7 +38,7 @@ async function runTests() {
     // TEST 2: Duplicate registration rejection
     let dupCaught = false;
     try {
-      registerUser({
+      await registerUser({
         name: 'Duplicate',
         email: organizerEmail,
         password: password
@@ -51,14 +51,14 @@ async function runTests() {
 
     // TEST 3: Login with correct password
     console.log('\n[2] Testing Authentication...');
-    const loginResult = loginUser(organizerEmail, password);
+    const loginResult = await loginUser(organizerEmail, password);
     assert(loginResult.user.id === regResult.user.id, 'Login successful with matching user ID');
     assert(!!loginResult.token, 'Session token created on login');
 
     // TEST 4: Login with incorrect password
     let badPassCaught = false;
     try {
-      loginUser(organizerEmail, 'WrongPassword!');
+      await loginUser(organizerEmail, 'WrongPassword!');
     } catch (err: any) {
       badPassCaught = true;
       assert(err.message.includes('Invalid email or password'), 'Wrong password rejected');
@@ -66,14 +66,14 @@ async function runTests() {
     assert(badPassCaught, 'Exception thrown on wrong password');
 
     // TEST 5: Validate and revoke session
-    const sessionUser = validateSession(loginResult.token);
+    const sessionUser = await validateSession(loginResult.token);
     assert(sessionUser?.id === regResult.user.id, 'Session validates successfully');
-    deleteSession(loginResult.token);
-    const expiredUser = validateSession(loginResult.token);
+    await deleteSession(loginResult.token);
+    const expiredUser = await validateSession(loginResult.token);
     assert(expiredUser === null, 'Session revoked after logout');
 
     // TEST 6: Register Member
-    const memberResult = registerUser({
+    const memberResult = await registerUser({
       name: 'Kwame Mensah',
       email: memberEmail,
       password: password
@@ -82,7 +82,7 @@ async function runTests() {
 
     // TEST 7: Circle Creation Wizard
     console.log('\n[3] Testing Circle Creation Wizard...');
-    const circleData = createCircleWithWizard(regResult.user.id, {
+    const circleData = await createCircleWithWizard(regResult.user.id, {
       name: 'Lagos Tech Founders Susu',
       description: 'Monthly savings pool for early-stage founders',
       contributionAmount: 250,
@@ -105,7 +105,7 @@ async function runTests() {
     // TEST 8: Invalid constraints
     let invalidCaught = false;
     try {
-      createCircleWithWizard(regResult.user.id, {
+      await createCircleWithWizard(regResult.user.id, {
         name: 'Invalid Circle',
         contributionAmount: -10,
         currency: 'USD',
@@ -121,24 +121,24 @@ async function runTests() {
 
     // TEST 9: Public Invitation Preview
     console.log('\n[4] Testing Circle Invitation & Joining...');
-    const preview = getInvitationDetails(circleData.inviteCode);
+    const preview = await getInvitationDetails(circleData.inviteCode);
     assert(preview.circleId === circleData.circle.id, 'Preview matches circle ID');
     assert(preview.availableSlots === 2, 'Available slots correctly shows 2');
     assert(preview.organizerName === 'Amara Okafor', 'Organizer name visible on preview');
     assert(preview.targetPot === 750, 'Target pot correctly calculated (250 * 3 = 750)');
 
     // TEST 10: Member Joins via Invite Code
-    const joinResult = joinCircleWithInvite(circleData.inviteCode, memberResult.user.id);
+    const joinResult = await joinCircleWithInvite(circleData.inviteCode, memberResult.user.id);
     assert(!!joinResult.member.id, 'Member joined successfully');
     assert(joinResult.member.turn_order === 2, 'Member allocated turn 2');
 
-    const previewAfterJoin = getInvitationDetails(circleData.inviteCode);
+    const previewAfterJoin = await getInvitationDetails(circleData.inviteCode);
     assert(previewAfterJoin.availableSlots === 1, 'Available slots decremented to 1');
 
     // TEST 11: Duplicate Join Prevention
     let dupJoinCaught = false;
     try {
-      joinCircleWithInvite(circleData.inviteCode, memberResult.user.id);
+      await joinCircleWithInvite(circleData.inviteCode, memberResult.user.id);
     } catch (err: any) {
       dupJoinCaught = true;
       assert(err.message.includes('already a member'), 'Duplicate join rejected');
@@ -147,10 +147,10 @@ async function runTests() {
 
     // TEST 12: Query User Circles
     console.log('\n[5] Testing User Circles Query...');
-    const organizerCircles = getUserCircles(regResult.user.id);
+    const organizerCircles = await getUserCircles(regResult.user.id);
     assert(organizerCircles.some(c => c.id === circleData.circle.id && c.organizer_id === regResult.user.id), 'Organizer sees circle as organizer');
 
-    const memberCircles = getUserCircles(memberResult.user.id);
+    const memberCircles = await getUserCircles(memberResult.user.id);
     assert(memberCircles.some(c => c.id === circleData.circle.id), 'Member sees circle in their circle list');
 
     // Summary

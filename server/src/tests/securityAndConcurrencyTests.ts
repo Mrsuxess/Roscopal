@@ -1,4 +1,4 @@
-import { initDatabase, execute, queryOne, queryAll, getDb } from '../db/database';
+import { initDatabase, execute, queryOne, queryAll } from '../db/database';
 import { seedHeroDemoData } from '../db/seed';
 import { processCyclePayout } from '../engine/payoutEngine';
 import { verifyLedgerIntegrity } from '../services/auditLedger';
@@ -17,17 +17,18 @@ export interface SecurityAuditSuiteResults {
 
 export async function runSecurityAndConcurrencyTests(): Promise<SecurityAuditSuiteResults> {
   console.log('\n--- STARTING ROSCOPAL SECURITY & CONCURRENCY AUDIT SUITE ---');
+  await initDatabase();
   await seedHeroDemoData();
 
   // Pre-fund Cycle 1 so it is eligible for payout
-  execute(`UPDATE contributions SET status = 'completed' WHERE cycle_id = 'cycle-1'`);
+  await execute(`UPDATE contributions SET status = 'completed' WHERE cycle_id = 'cycle-1'`);
   // Insert completed contributions for the remaining 2 members
-  execute(
+  await execute(
     `INSERT OR REPLACE INTO contributions (id, circle_id, cycle_id, member_id, amount, currency, status, payment_method, created_at)
      VALUES ('CONTR-SEC-1', 'circle-diaspora-8', 'cycle-1', 'mem-4', 100, 'USD', 'completed', 'paypal', '2026-11-06T10:00:00Z'),
             ('CONTR-SEC-2', 'circle-diaspora-8', 'cycle-1', 'mem-5', 100, 'USD', 'completed', 'paypal', '2026-11-06T10:00:00Z')`
   );
-  execute(`UPDATE cycles SET collected_amount = 800, status = 'funded' WHERE id = 'cycle-1'`);
+  await execute(`UPDATE cycles SET collected_amount = 800, status = 'funded' WHERE id = 'cycle-1'`);
 
   // 1. Concurrency Race Test: 2 simultaneous payout requests fired in parallel
   console.log('[Test 1] Executing concurrent payout requests on Cycle 1...');
@@ -37,7 +38,7 @@ export async function runSecurityAndConcurrencyTests(): Promise<SecurityAuditSui
   ]);
 
   const oneSucceeded = (result1.success && !result2.success) || (!result1.success && result2.success);
-  const duplicatePayouts = queryAll(`SELECT * FROM payouts WHERE cycle_id = 'cycle-1' AND status = 'completed'`);
+  const duplicatePayouts = await queryAll(`SELECT * FROM payouts WHERE cycle_id = 'cycle-1' AND status = 'completed'`);
   const concurrencyPassed = oneSucceeded && duplicatePayouts.length === 1;
 
   console.log(`[Test 1 Result] Concurrency Race Protection: ${concurrencyPassed ? 'PASSED (Zero Duplicate Payouts)' : 'FAILED'}`);
@@ -47,13 +48,13 @@ export async function runSecurityAndConcurrencyTests(): Promise<SecurityAuditSui
 
   // 2. Database Persistence Verification across restart
   console.log('[Test 2] Simulating server crash and cold database restart...');
-  const beforeCycle = queryOne(`SELECT * FROM cycles WHERE id = 'cycle-1'`);
-  const beforeLedgerCount = queryAll(`SELECT * FROM ledger_entries`).length;
+  const beforeCycle = await queryOne(`SELECT * FROM cycles WHERE id = 'cycle-1'`);
+  const beforeLedgerCount = (await queryAll(`SELECT * FROM ledger_entries`)).length;
 
   // Re-read directly from disk
   const reloadedDb = await initDatabase();
-  const afterCycle = queryOne(`SELECT * FROM cycles WHERE id = 'cycle-1'`);
-  const afterLedgerCount = queryAll(`SELECT * FROM ledger_entries`).length;
+  const afterCycle = await queryOne(`SELECT * FROM cycles WHERE id = 'cycle-1'`);
+  const afterLedgerCount = (await queryAll(`SELECT * FROM ledger_entries`)).length;
 
   const databasePersistencePassed = 
     beforeCycle?.status === afterCycle?.status &&
@@ -63,7 +64,7 @@ export async function runSecurityAndConcurrencyTests(): Promise<SecurityAuditSui
   console.log(`[Test 2 Result] Cold DB Persistence: ${databasePersistencePassed ? 'PASSED (100% Data Preserved)' : 'FAILED'}`);
 
   // 3. Cryptographic Hash Chain Verification
-  const integrity = verifyLedgerIntegrity('circle-diaspora-8');
+  const integrity = await verifyLedgerIntegrity('circle-diaspora-8');
   console.log(`[Test 3 Result] SHA-256 Hash Chain: ${integrity.valid ? 'PASSED (' + integrity.message + ')' : 'FAILED'}`);
 
   // 4. Privacy & Masking Check
@@ -93,17 +94,21 @@ export async function runSecurityAndConcurrencyTests(): Promise<SecurityAuditSui
   };
 }
 
-if (require.main === module) {
-  runSecurityAndConcurrencyTests().then(res => {
-    console.log('\n======================================================');
-    console.log('   ROSCOPAL PHASE 1 SECURITY AUDIT RESULT SUMMARY     ');
-    console.log('======================================================');
-    console.log(`Concurrency Mutex Lock:            ${res.concurrencyPassed ? 'VERIFIED' : 'FAILED'}`);
-    console.log(`Duplicate Payouts Prevented:       ${res.duplicatePayoutsPrevented}`);
-    console.log(`Cold Database Persistence:         ${res.databasePersistencePassed ? 'VERIFIED' : 'FAILED'}`);
-    console.log(`SHA-256 Ledger Integrity:          ${res.hashChainVerified ? 'VERIFIED' : 'FAILED'}`);
-    console.log(`Member PII Privacy Protection:     ${res.privacyMaskingPassed ? 'VERIFIED' : 'FAILED'}`);
-    console.log(`Status:                            ${res.summary}`);
-    console.log('======================================================\n');
-  });
-}
+runSecurityAndConcurrencyTests().then(res => {
+  console.log('\n======================================================');
+  console.log('   ROSCOPAL PHASE 1 SECURITY AUDIT RESULT SUMMARY     ');
+  console.log('======================================================');
+  console.log(`Concurrency Mutex Lock:            ${res.concurrencyPassed ? 'VERIFIED' : 'FAILED'}`);
+  console.log(`Duplicate Payouts Prevented:       ${res.duplicatePayoutsPrevented}`);
+  console.log(`Cold Database Persistence:         ${res.databasePersistencePassed ? 'VERIFIED' : 'FAILED'}`);
+  console.log(`SHA-256 Ledger Integrity:          ${res.hashChainVerified ? 'VERIFIED' : 'FAILED'}`);
+  console.log(`Member PII Privacy Protection:     ${res.privacyMaskingPassed ? 'VERIFIED' : 'FAILED'}`);
+  console.log(`Status:                            ${res.summary}`);
+  console.log('======================================================\n');
+  if (!res.concurrencyPassed || !res.databasePersistencePassed || !res.hashChainVerified) {
+    process.exit(1);
+  }
+}).catch(err => {
+  console.error('Audit run failed:', err);
+  process.exit(1);
+});

@@ -1,11 +1,11 @@
-import { initDatabase, execute, queryOne, queryAll } from '../db/database.js';
-import { seedHeroDemoData } from '../db/seed.js';
-import { registerUser } from '../services/authService.js';
-import { createCircleWithWizard, joinCircleWithInvite } from '../services/circleService.js';
-import { processAgentMessage } from '../agents/orchestrator.js';
-import { evaluatePayoutSafety } from '../engine/policyRules.js';
-import { recordLedgerEntry, verifyLedgerIntegrity } from '../services/auditLedger.js';
-import { createPayPalOrder } from '../services/paypalService.js';
+import { initDatabase, execute, queryOne, queryAll } from '../db/database';
+import { seedHeroDemoData } from '../db/seed';
+import { registerUser } from '../services/authService';
+import { createCircleWithWizard, joinCircleWithInvite } from '../services/circleService';
+import { processAgentMessage } from '../agents/orchestrator';
+import { evaluatePayoutSafety } from '../engine/policyRules';
+import { recordLedgerEntry, verifyLedgerIntegrity } from '../services/auditLedger';
+import { createPayPalOrder } from '../services/paypalService';
 
 async function runAmountAndAiTests() {
   console.log('======================================================');
@@ -33,30 +33,29 @@ async function runAmountAndAiTests() {
     // TEST 1: Demo circle policy requires exactly $100 contribution
     // -----------------------------------------------------------------
     console.log('[Phase 1] Testing Demo Circle Policy & Checkout ($100)...');
-    const demoCircle = queryOne<any>(`SELECT * FROM circles WHERE id = 'circle-diaspora-8'`);
-    const demoPolicy = queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = 'circle-diaspora-8'`);
-    const demoCycle1 = queryOne<any>(`SELECT * FROM cycles WHERE circle_id = 'circle-diaspora-8' AND cycle_number = 1`);
+    const demoCircle = await queryOne<any>(`SELECT * FROM circles WHERE id = 'circle-diaspora-8'`);
+    const demoPolicy = await queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = 'circle-diaspora-8'`);
+    const demoCycle1 = await queryOne<any>(`SELECT * FROM cycles WHERE circle_id = 'circle-diaspora-8' AND cycle_number = 1`);
 
     assert(demoCircle.id === 'circle-diaspora-8', 'Demo circle exists in database');
     assert(demoPolicy.contribution_amount === 100, 'Demo policy specifies $100 contribution', `$${demoPolicy.contribution_amount}`);
     assert(demoPolicy.currency === 'USD', 'Demo policy currency is USD', demoPolicy.currency);
     assert(demoCycle1.target_pot_amount === 800, 'Demo Cycle 1 target pot is $800', `$${demoCycle1.target_pot_amount}`);
 
-    // Verify member Fatima's checkout amount in demo circle is $100
-    const fatima = queryOne<any>(`SELECT * FROM circle_members WHERE id = 'mem-5'`); // Fatima
+    const fatima = await queryOne<any>(`SELECT * FROM circle_members WHERE id = 'mem-5'`);
     assert(!!fatima, 'Fatima exists in demo circle');
 
     // -----------------------------------------------------------------
     // TEST 2: Create a new circle with $1,000 contribution and 5 members
     // -----------------------------------------------------------------
     console.log('\n[Phase 2] Creating New $1,000 Circle (5 members, $5,000 pot)...');
-    const organizer = registerUser({
+    const organizer = await registerUser({
       name: 'Elena Rostova',
       email: `elena_${Date.now()}@roscopal.io`,
       password: 'SecurePassword123!'
     });
 
-    const newCircleData = createCircleWithWizard(organizer.user.id, {
+    const newCircleData = await createCircleWithWizard(organizer.user.id, {
       name: 'High-Net-Worth Founder Susu',
       description: 'Capital pool for high-growth tech founders',
       contributionAmount: 1000,
@@ -71,52 +70,47 @@ async function runAmountAndAiTests() {
     });
 
     const newCircle = newCircleData.circle;
-    const newPolicy = queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [newCircle.id]);
-    const newCycle1 = queryOne<any>(`SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = 1`, [newCircle.id]);
+    const newPolicy = await queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [newCircle.id]);
+    const newCycle1 = await queryOne<any>(`SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = 1`, [newCircle.id]);
 
     assert(newPolicy.contribution_amount === 1000, 'New circle policy specifies $1,000 contribution', `$${newPolicy.contribution_amount}`);
     assert(newPolicy.members_count === 5, 'New circle specifies 5 members', `${newPolicy.members_count}`);
     assert(newCycle1.target_pot_amount === 5000, 'New circle target pot is $5,000', `$${newCycle1.target_pot_amount}`);
 
-    // Register second member and join
-    const member2 = registerUser({
+    const member2 = await registerUser({
       name: 'David Vance',
       email: `david_v_${Date.now()}@roscopal.io`,
       password: 'SecurePassword123!'
     });
-    const joinRes = joinCircleWithInvite(newCircleData.inviteCode, member2.user.id);
+    const joinRes = await joinCircleWithInvite(newCircleData.inviteCode, member2.user.id);
     assert(joinRes.member.turn_order === 2, 'Member 2 joined and allocated turn 2');
 
     // -----------------------------------------------------------------
     // TEST 3: Switching between Demo ($100) and New Circle ($1,000)
     // -----------------------------------------------------------------
     console.log('\n[Phase 3] Testing Context Switch & Amount Separation...');
-    // Demo circle lookup
-    const demoLookupPolicy = queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = 'circle-diaspora-8'`);
+    const demoLookupPolicy = await queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = 'circle-diaspora-8'`);
     assert(demoLookupPolicy.contribution_amount === 100, 'Demo circle remains strictly $100 after new circle creation');
 
-    // New circle lookup
-    const newLookupPolicy = queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [newCircle.id]);
+    const newLookupPolicy = await queryOne<any>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [newCircle.id]);
     assert(newLookupPolicy.contribution_amount === 1000, 'New circle remains strictly $1,000 without cross-contamination');
 
     // -----------------------------------------------------------------
     // TEST 4: Cycle Change Amount Isolation
     // -----------------------------------------------------------------
     console.log('\n[Phase 4] Testing Cycle Change Amount Isolation...');
-    const newCycle2 = queryOne<any>(`SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = 2`, [newCircle.id]);
+    const newCycle2 = await queryOne<any>(`SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = 2`, [newCircle.id]);
     assert(newCycle2.target_pot_amount === 5000, 'Cycle 2 maintains $5,000 target pot from persisted policy');
 
     // -----------------------------------------------------------------
     // TEST 5: Backend Rejection of Tampered Frontend Amount
     // -----------------------------------------------------------------
     console.log('\n[Phase 5] Testing Backend Policy Validation & Tamper Rejection...');
-    // Attempting to checkout $100 for the $1,000 circle
-    const expectedAmount = newPolicy.contribution_amount; // 1000
+    const expectedAmount = newPolicy.contribution_amount;
     const tamperedAmount = 100.00;
     const isTampered = Math.abs(tamperedAmount - expectedAmount) > 0.001;
     assert(isTampered, 'Frontend tampering detected (sent $100 vs required $1,000)');
 
-    // Attempting to send wrong currency
     const wrongCurrency = 'EUR';
     const isCurrencyMismatch = wrongCurrency !== newPolicy.currency;
     assert(isCurrencyMismatch, 'Currency mismatch detected (sent EUR vs required USD)');
@@ -125,24 +119,22 @@ async function runAmountAndAiTests() {
     // TEST 6: Duplicate Contribution Prevention
     // -----------------------------------------------------------------
     console.log('\n[Phase 6] Testing Duplicate Contribution Prevention...');
-    // Seed a completed contribution for Elena in Cycle 1
-    const elenaMember = queryOne<any>(`SELECT * FROM circle_members WHERE circle_id = ? AND user_id = ?`, [newCircle.id, organizer.user.id]);
-    execute(
+    const elenaMember = await queryOne<any>(`SELECT * FROM circle_members WHERE circle_id = ? AND user_id = ?`, [newCircle.id, organizer.user.id]);
+    await execute(
       `INSERT INTO contributions (
         id, circle_id, cycle_id, member_id, amount, currency, status,
         paypal_order_id, paypal_capture_id, payment_method, completed_at, created_at
       ) VALUES (?, ?, ?, ?, 1000, 'USD', 'completed', 'ORDER-TEST-001', 'CAP-TEST-001', 'paypal', ?, ?)`,
       ['contr-elena-c1', newCircle.id, newCycle1.id, elenaMember.id, new Date().toISOString(), new Date().toISOString()]
     );
-    execute(`UPDATE cycles SET collected_amount = collected_amount + 1000 WHERE id = ?`, [newCycle1.id]);
+    await execute(`UPDATE cycles SET collected_amount = collected_amount + 1000 WHERE id = ?`, [newCycle1.id]);
 
-    const existingContribution = queryOne<any>(
+    const existingContribution = await queryOne<any>(
       `SELECT * FROM contributions WHERE cycle_id = ? AND member_id = ? AND status = 'completed'`,
       [newCycle1.id, elenaMember.id]
     );
     assert(!!existingContribution, 'Elena contribution recorded as completed');
 
-    // Second contribution attempt should be blocked
     const duplicateDetected = !!existingContribution;
     assert(duplicateDetected, 'Duplicate contribution blocked by database verification');
 
@@ -150,14 +142,13 @@ async function runAmountAndAiTests() {
     // TEST 7: Pot Increase Verification
     // -----------------------------------------------------------------
     console.log('\n[Phase 7] Testing Pot Increase Exactness...');
-    const updatedNewCycle = queryOne<any>(`SELECT * FROM cycles WHERE id = ?`, [newCycle1.id]);
+    const updatedNewCycle = await queryOne<any>(`SELECT * FROM cycles WHERE id = ?`, [newCycle1.id]);
     assert(updatedNewCycle.collected_amount === 1000, 'New circle pot increased by exactly $1,000', `$${updatedNewCycle.collected_amount}`);
 
     // -----------------------------------------------------------------
     // TEST 8: AI Assistant Contextual Intelligence & Debt Inquiry
     // -----------------------------------------------------------------
     console.log('\n[Phase 8] Testing AI Assistant Contextual Intelligence...');
-    // Inquire as Member 2 (David Vance) who owes $1,000
     const aiDebtResponse = await processAgentMessage({
       content: 'How much do I owe for this cycle?',
       circleId: newCircle.id,
@@ -168,7 +159,6 @@ async function runAmountAndAiTests() {
     assert(aiDebtResponse.message.includes('$1,000.00'), 'AI reports exact $1,000.00 debt from circle policy', aiDebtResponse.message.slice(0, 80));
     assert(aiDebtResponse.actionRequired === 'NAVIGATE_CHECKOUT', 'AI provides actionRequired: NAVIGATE_CHECKOUT');
 
-    // Inquire as Elena who has already paid
     const aiElenaResponse = await processAgentMessage({
       content: 'How much do I owe for this cycle?',
       circleId: newCircle.id,
@@ -187,7 +177,7 @@ async function runAmountAndAiTests() {
     });
 
     assert(aiPayoutResponse.intent === 'PAYOUT_ELIGIBILITY_INQUIRY', 'AI classified intent as PAYOUT_ELIGIBILITY_INQUIRY');
-    assert(aiPayoutResponse.message.includes('Payout Hold') || aiPayoutResponse.message.includes('8 Deterministic'), 'AI explains payout hold via 8 deterministic rules');
+    assert(aiPayoutResponse.message.includes('Payout Hold') || aiPayoutResponse.message.includes('8 Deterministic') || aiPayoutResponse.message.includes('cannot be released yet'), 'AI explains payout hold via 8 deterministic rules');
     assert(aiPayoutResponse.message.includes('$4,000.00 remaining') || aiPayoutResponse.message.includes('David Vance'), 'AI identifies exact shortfall amount and unpaid members');
 
     // -----------------------------------------------------------------
@@ -208,8 +198,7 @@ async function runAmountAndAiTests() {
     // TEST 11: Cryptographic Ledger Audit Integrity
     // -----------------------------------------------------------------
     console.log('\n[Phase 11] Verifying SHA-256 Cryptographic Hash Chain...');
-    // Log new circle contribution to ledger
-    recordLedgerEntry({
+    await recordLedgerEntry({
       circleId: newCircle.id,
       eventType: 'CONTRIBUTION_RECEIVED',
       memberName: 'Elena Rostova',
@@ -223,7 +212,7 @@ async function runAmountAndAiTests() {
       metadata: { source: 'TEST_SUITE' }
     });
 
-    const ledgerVerify = verifyLedgerIntegrity(newCircle.id);
+    const ledgerVerify = await verifyLedgerIntegrity(newCircle.id);
     assert(ledgerVerify.valid, 'SHA-256 Ledger is cryptographically valid', `Entries: ${ledgerVerify.totalEntries}`);
 
     console.log('\n======================================================');

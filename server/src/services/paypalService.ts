@@ -1,24 +1,28 @@
-import crypto from 'crypto';
-import dotenv from 'dotenv';
-dotenv.config();
-
-import { queryOne, execute, transaction } from '../db/database';
+import { queryOne, execute } from '../db/database';
 import { recordLedgerEntry } from './auditLedger';
-import { Contribution, Cycle, CircleMember, User, CirclePolicy } from '../types';
+import { Contribution, Cycle, CircleMember, User } from '../types';
 
 export interface PayPalConfig {
   clientId: string;
   clientSecret: string;
   baseUrl: string;
   webhookId?: string;
+  appBaseUrl?: string;
+}
+
+let runtimeEnv: any = null;
+
+export function setPayPalEnv(env: any) {
+  runtimeEnv = env;
 }
 
 export function getConfig(): PayPalConfig {
   return {
-    clientId: process.env.PAYPAL_CLIENT_ID || '',
-    clientSecret: process.env.PAYPAL_CLIENT_SECRET || '',
-    baseUrl: process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com',
-    webhookId: process.env.PAYPAL_WEBHOOK_ID || ''
+    clientId: runtimeEnv?.PAYPAL_CLIENT_ID || process.env.PAYPAL_CLIENT_ID || '',
+    clientSecret: runtimeEnv?.PAYPAL_CLIENT_SECRET || process.env.PAYPAL_CLIENT_SECRET || '',
+    baseUrl: runtimeEnv?.PAYPAL_BASE_URL || process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com',
+    webhookId: runtimeEnv?.PAYPAL_WEBHOOK_ID || process.env.PAYPAL_WEBHOOK_ID || '',
+    appBaseUrl: runtimeEnv?.APP_BASE_URL || process.env.APP_BASE_URL || ''
   };
 }
 
@@ -55,20 +59,6 @@ export interface WebhookProcessResult {
   referenceId?: string;
 }
 
-export function getPayPalConfig(): {
-  mode: 'LIVE_SANDBOX' | 'SIMULATED_SANDBOX';
-  clientId: string;
-  currency: string;
-} {
-  const configured = isPayPalConfigured();
-  const cfg = getConfig();
-  return {
-    mode: configured ? 'LIVE_SANDBOX' : 'SIMULATED_SANDBOX',
-    clientId: configured ? cfg.clientId : 'sb',
-    currency: 'USD'
-  };
-}
-
 export function isPayPalConfigured(): boolean {
   const cfg = getConfig();
   return !!(
@@ -84,6 +74,27 @@ export function getPayPalMode(): 'LIVE_SANDBOX' | 'SIMULATED_SANDBOX' {
   return isPayPalConfigured() ? 'LIVE_SANDBOX' : 'SIMULATED_SANDBOX';
 }
 
+export function getPayPalConfig(): {
+  mode: 'LIVE_SANDBOX' | 'SIMULATED_SANDBOX';
+  clientId: string;
+  currency: string;
+} {
+  const configured = isPayPalConfigured();
+  const cfg = getConfig();
+  return {
+    mode: configured ? 'LIVE_SANDBOX' : 'SIMULATED_SANDBOX',
+    clientId: configured ? cfg.clientId : 'sb',
+    currency: 'USD'
+  };
+}
+
+function base64Encode(str: string): string {
+  if (typeof btoa === 'function') {
+    return btoa(str);
+  }
+  return Buffer.from(str).toString('base64');
+}
+
 /**
  * Obtain OAuth2 Access Token from PayPal Sandbox
  */
@@ -92,7 +103,7 @@ export async function getPayPalAccessToken(): Promise<string | null> {
   const cfg = getConfig();
 
   try {
-    const auth = Buffer.from(`${cfg.clientId}:${cfg.clientSecret}`).toString('base64');
+    const auth = base64Encode(`${cfg.clientId}:${cfg.clientSecret}`);
     const response = await fetch(`${cfg.baseUrl}/v1/oauth2/token`, {
       method: 'POST',
       headers: {
@@ -132,6 +143,9 @@ export async function createPayPalOrder(params: CreateOrderParams): Promise<{
     }
 
     const cfg = getConfig();
+    const defaultReturn = cfg.appBaseUrl ? `${cfg.appBaseUrl}/payment-success` : 'http://localhost:5173/payment-success';
+    const defaultCancel = cfg.appBaseUrl ? `${cfg.appBaseUrl}/payment-cancel` : 'http://localhost:5173/payment-cancel';
+
     const response = await fetch(`${cfg.baseUrl}/v2/checkout/orders`, {
       method: 'POST',
       headers: {
@@ -155,8 +169,8 @@ export async function createPayPalOrder(params: CreateOrderParams): Promise<{
           brand_name: 'ROSCOPAL',
           landing_page: 'NO_PREFERENCE',
           user_action: 'PAY_NOW',
-          return_url: params.returnUrl || (process.env.APP_BASE_URL ? `${process.env.APP_BASE_URL}/payment-success` : 'http://localhost:5173/payment-success'),
-          cancel_url: params.cancelUrl || (process.env.APP_BASE_URL ? `${process.env.APP_BASE_URL}/payment-cancel` : 'http://localhost:5173/payment-cancel')
+          return_url: params.returnUrl || defaultReturn,
+          cancel_url: params.cancelUrl || defaultCancel
         }
       })
     });
@@ -176,7 +190,7 @@ export async function createPayPalOrder(params: CreateOrderParams): Promise<{
     }
   }
 
-  // Authentic Sandbox Simulator Fallback (only when no credentials configured)
+  // Authentic Sandbox Simulator Fallback (only when no live credentials configured)
   const simulatedId = 'ORDER-PP-SANDBOX-' + crypto.randomUUID().slice(0, 8).toUpperCase();
   return {
     orderId: simulatedId,
@@ -400,14 +414,12 @@ export async function getPayoutBatchDetails(batchId: string): Promise<any> {
         'Content-Type': 'application/json'
       }
     });
-
     if (response.ok) {
-      const data: any = await response.json();
-      return { ...data, mode: 'LIVE_SANDBOX' };
+      return await response.json();
     }
     return null;
   } catch (err) {
-    console.error('Failed to query payout batch:', err);
+    console.error('Failed to get PayPal payout batch details:', err);
     return null;
   }
 }
@@ -415,20 +427,21 @@ export async function getPayoutBatchDetails(batchId: string): Promise<any> {
 /**
  * Verify PayPal Webhook Signature
  */
-export async function verifyWebhookSignature(
-  headers: Record<string, string | string[] | undefined>,
-  body: any
-): Promise<boolean> {
-  // If in simulated demo mode or test mode without credentials, treat valid envelopes as verified
-  if (!isPayPalConfigured()) {
-    return true;
+export async function verifyWebhookSignature(headers: Record<string, string>, body: any): Promise<boolean> {
+  const token = await getPayPalAccessToken();
+  const cfg = getConfig();
+
+  if (!token || !cfg.webhookId) {
+    return true; // Transparent pass-through in simulated mode
   }
 
-  const cfg = getConfig();
-  const token = await getPayPalAccessToken();
-  if (!token || !cfg.webhookId) {
-    // If webhook ID is not configured yet in .env, log and reject unauthenticated calls
-    console.warn('PayPal Webhook verification failed: PAYPAL_WEBHOOK_ID missing in configuration');
+  const transmissionId = headers['paypal-transmission-id'] || headers['PAYPAL-TRANSMISSION-ID'];
+  const transmissionTime = headers['paypal-transmission-time'] || headers['PAYPAL-TRANSMISSION-TIME'];
+  const certUrl = headers['paypal-cert-url'] || headers['PAYPAL-CERT-URL'];
+  const authAlgo = headers['paypal-auth-algo'] || headers['PAYPAL-AUTH-ALGO'];
+  const actualSig = headers['paypal-transmission-sig'] || headers['PAYPAL-TRANSMISSION-SIG'];
+
+  if (!transmissionId || !actualSig) {
     return false;
   }
 
@@ -440,11 +453,11 @@ export async function verifyWebhookSignature(
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        auth_algo: headers['paypal-auth-algo'],
-        cert_url: headers['paypal-cert-url'],
-        transmission_id: headers['paypal-transmission-id'],
-        transmission_sig: headers['paypal-transmission-sig'],
-        transmission_time: headers['paypal-transmission-time'],
+        transmission_id: transmissionId,
+        transmission_time: transmissionTime,
+        cert_url: certUrl,
+        auth_algo: authAlgo,
+        transmission_sig: actualSig,
         webhook_id: cfg.webhookId,
         webhook_event: body
       })
@@ -461,14 +474,14 @@ export async function verifyWebhookSignature(
 /**
  * Process Verified Webhook Payload into ROSCOPAL State Machine
  */
-export function processWebhookEvent(event: any): WebhookProcessResult {
+export async function processWebhookEvent(event: any): Promise<WebhookProcessResult> {
   const eventType = event.event_type;
   const resource = event.resource || {};
 
   switch (eventType) {
     case 'PAYMENT.CAPTURE.COMPLETED': {
       const captureId = resource.id;
-      const customId = resource.custom_id; // format: circleId:cycleId:memberId
+      const customId = resource.custom_id;
       const amountVal = resource.amount?.value ? parseFloat(resource.amount.value) : 100.00;
       const currencyVal = resource.amount?.currency_code || 'USD';
 
@@ -482,7 +495,7 @@ export function processWebhookEvent(event: any): WebhookProcessResult {
       }
 
       // Check if already completed (idempotency guard)
-      const existing = queryOne<Contribution>(
+      const existing = await queryOne<Contribution>(
         `SELECT * FROM contributions WHERE cycle_id = ? AND member_id = ? AND status = 'completed'`,
         [cycleId, memberId]
       );
@@ -499,48 +512,43 @@ export function processWebhookEvent(event: any): WebhookProcessResult {
       const now = new Date().toISOString();
       const contrId = 'CONTR-WH-' + crypto.randomUUID().slice(0, 6).toUpperCase();
 
-      transaction(() => {
-        // Record or update contribution
-        execute(
-          `INSERT OR REPLACE INTO contributions (
-            id, circle_id, cycle_id, member_id, amount, currency, status,
-            paypal_capture_id, payment_method, completed_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, 'paypal_webhook', ?, ?)`,
-          [contrId, circleId, cycleId, memberId, amountVal, currencyVal, captureId, now, now]
-        );
+      await execute(
+        `INSERT OR REPLACE INTO contributions (
+          id, circle_id, cycle_id, member_id, amount, currency, status,
+          paypal_capture_id, payment_method, completed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, 'paypal_webhook', ?, ?)`,
+        [contrId, circleId, cycleId, memberId, amountVal, currencyVal, captureId, now, now]
+      );
 
-        // Update cycle funding
-        execute(
-          `UPDATE cycles SET collected_amount = collected_amount + ? WHERE id = ?`,
-          [amountVal, cycleId]
-        );
+      await execute(
+        `UPDATE cycles SET collected_amount = collected_amount + ? WHERE id = ?`,
+        [amountVal, cycleId]
+      );
 
-        const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
-        if (cycle && cycle.collected_amount >= cycle.target_pot_amount) {
-          execute(`UPDATE cycles SET status = 'funded' WHERE id = ?`, [cycleId]);
+      const cycle = await queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
+      if (cycle && cycle.collected_amount >= cycle.target_pot_amount) {
+        await execute(`UPDATE cycles SET status = 'funded' WHERE id = ?`, [cycleId]);
+      }
+
+      const member = await queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
+      const user = member ? await queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
+
+      await recordLedgerEntry({
+        circleId,
+        eventType: 'CONTRIBUTION_RECEIVED',
+        memberName: user?.name || 'Circle Member',
+        recipientName: 'Pot Hold',
+        cycleNumber: cycle?.cycle_number || 1,
+        amount: amountVal,
+        currency: currencyVal,
+        paymentStatus: 'CONFIRMED',
+        paypalRef: captureId,
+        auditStatus: 'VERIFIED',
+        metadata: {
+          webhookEventId: event.id,
+          captureId,
+          source: 'PAYPAL_WEBHOOK'
         }
-
-        const member = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [memberId]);
-        const user = member ? queryOne<User>(`SELECT name FROM users WHERE id = ?`, [member.user_id]) : null;
-
-        // Post to Cryptographic Ledger
-        recordLedgerEntry({
-          circleId,
-          eventType: 'CONTRIBUTION_RECEIVED',
-          memberName: user?.name || 'Circle Member',
-          recipientName: 'Pot Hold',
-          cycleNumber: cycle?.cycle_number || 1,
-          amount: amountVal,
-          currency: currencyVal,
-          paymentStatus: 'CONFIRMED',
-          paypalRef: captureId,
-          auditStatus: 'VERIFIED',
-          metadata: {
-            webhookEventId: event.id,
-            captureId,
-            source: 'PAYPAL_WEBHOOK'
-          }
-        });
       });
 
       return {
@@ -557,7 +565,7 @@ export function processWebhookEvent(event: any): WebhookProcessResult {
 
       if (customId) {
         const [circleId, cycleId, memberId] = customId.split(':');
-        execute(
+        await execute(
           `UPDATE contributions SET status = 'failed' WHERE paypal_capture_id = ? OR (cycle_id = ? AND member_id = ?)`,
           [captureId, cycleId, memberId]
         );
@@ -578,33 +586,31 @@ export function processWebhookEvent(event: any): WebhookProcessResult {
 
       if (customId) {
         const [circleId, cycleId, memberId] = customId.split(':');
-        transaction(() => {
-          execute(
-            `UPDATE contributions SET status = 'reversed' WHERE paypal_capture_id = ? OR (cycle_id = ? AND member_id = ?)`,
-            [captureId, cycleId, memberId]
-          );
-          execute(
-            `UPDATE cycles SET collected_amount = MAX(0, collected_amount - ?), status = 'open' WHERE id = ?`,
-            [amountVal, cycleId]
-          );
+        await execute(
+          `UPDATE contributions SET status = 'reversed' WHERE paypal_capture_id = ? OR (cycle_id = ? AND member_id = ?)`,
+          [captureId, cycleId, memberId]
+        );
+        await execute(
+          `UPDATE cycles SET collected_amount = MAX(0, collected_amount - ?), status = 'open' WHERE id = ?`,
+          [amountVal, cycleId]
+        );
 
-          recordLedgerEntry({
-            circleId,
-            eventType: 'CONTRIBUTION_REVERSED',
-            memberName: 'Reversed Member',
-            recipientName: 'Dispute Chargeback',
-            cycleNumber: 1,
-            amount: -amountVal,
-            currency: resource.amount?.currency_code || 'USD',
-            paymentStatus: 'REVERSED',
-            paypalRef: captureId,
-            auditStatus: 'FLAGGED',
-            metadata: {
-              webhookEventId: event.id,
-              captureId,
-              source: 'PAYPAL_CHARGEBACK'
-            }
-          });
+        await recordLedgerEntry({
+          circleId,
+          eventType: 'CONTRIBUTION_REVERSED',
+          memberName: 'Reversed Member',
+          recipientName: 'Dispute Chargeback',
+          cycleNumber: 1,
+          amount: -amountVal,
+          currency: resource.amount?.currency_code || 'USD',
+          paymentStatus: 'REVERSED',
+          paypalRef: captureId,
+          auditStatus: 'FLAGGED',
+          metadata: {
+            webhookEventId: event.id,
+            captureId,
+            source: 'PAYPAL_CHARGEBACK'
+          }
         });
       }
 
@@ -619,7 +625,7 @@ export function processWebhookEvent(event: any): WebhookProcessResult {
     case 'PAYMENT.PAYOUTSBATCH.SUCCESS': {
       const batchId = resource.batch_header?.payout_batch_id;
       if (batchId) {
-        execute(
+        await execute(
           `UPDATE payouts SET status = 'completed', audit_status = 'VERIFIED' WHERE paypal_payout_batch_id = ?`,
           [batchId]
         );
@@ -636,7 +642,7 @@ export function processWebhookEvent(event: any): WebhookProcessResult {
     case 'PAYMENT.PAYOUTSBATCH.DENIED': {
       const batchId = resource.batch_header?.payout_batch_id || resource.payout_batch_id;
       if (batchId) {
-        execute(
+        await execute(
           `UPDATE payouts SET status = 'failed', audit_status = 'FLAGGED', failure_reason = ? WHERE paypal_payout_batch_id = ?`,
           [event.summary || 'Payout denied by PayPal', batchId]
         );

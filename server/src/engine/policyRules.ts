@@ -26,8 +26,8 @@ export interface PayoutSafetyCheckResult {
   };
 }
 
-export function evaluatePayoutSafety(cycleId: string): PayoutSafetyCheckResult {
-  const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
+export async function evaluatePayoutSafety(cycleId: string): Promise<PayoutSafetyCheckResult> {
+  const cycle = await queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [cycleId]);
   if (!cycle) {
     return {
       allowed: false,
@@ -54,11 +54,11 @@ export function evaluatePayoutSafety(cycleId: string): PayoutSafetyCheckResult {
     };
   }
 
-  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [cycle.circle_id]);
-  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [cycle.circle_id]);
-  const members = queryAll<CircleMember>(`SELECT * FROM circle_members WHERE circle_id = ? AND status != 'departed'`, [cycle.circle_id]);
-  const recipient = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [cycle.recipient_member_id]);
-  const recipientUser = recipient ? queryOne<User>(`SELECT * FROM users WHERE id = ?`, [recipient.user_id]) : null;
+  const circle = await queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [cycle.circle_id]);
+  const policy = await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [cycle.circle_id]);
+  const members = await queryAll<CircleMember>(`SELECT * FROM circle_members WHERE circle_id = ? AND status != 'departed'`, [cycle.circle_id]);
+  const recipient = await queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ?`, [cycle.recipient_member_id]);
+  const recipientUser = recipient ? await queryOne<User>(`SELECT * FROM users WHERE id = ?`, [recipient.user_id]) : null;
 
   // Check 1: Circle exists and is active
   const circleActive = !!circle && circle.status === 'active';
@@ -70,7 +70,7 @@ export function evaluatePayoutSafety(cycleId: string): PayoutSafetyCheckResult {
   const recipientValid = !!recipient && !!recipientUser && recipient.status !== 'departed';
 
   // Check 4 & 5: Completed contributions
-  const contributions = queryAll<Contribution>(
+  const contributions = await queryAll<Contribution>(
     `SELECT * FROM contributions WHERE cycle_id = ? AND status = 'completed'`,
     [cycleId]
   );
@@ -78,24 +78,22 @@ export function evaluatePayoutSafety(cycleId: string): PayoutSafetyCheckResult {
   const totalCollected = Math.round(contributions.reduce((sum, c) => sum + Number(c.amount), 0) * 100) / 100;
   const targetAmount = Math.round(Number(cycle.target_pot_amount) * 100) / 100;
 
-  // In a standard ROSCA, either everyone contributes (including or excluding recipient depending on pot definition,
-  // in our policy: members_count * contribution_amount = target_pot_amount).
-  // Everyone contributes $100.
   const expectedContributions = policy ? policy.members_count : members.length;
   
   // Find which members haven't paid
   const paidMemberIds = new Set(contributions.map(c => c.member_id));
   const unpaidMembers = members.filter(m => !paidMemberIds.has(m.id));
-  const unpaidUserNames = unpaidMembers.map(m => {
-    const u = queryOne<User>(`SELECT name FROM users WHERE id = ?`, [m.user_id]);
-    return u ? u.name : m.id;
-  });
+  const unpaidUserNames: string[] = [];
+  for (const m of unpaidMembers) {
+    const u = await queryOne<User>(`SELECT name FROM users WHERE id = ?`, [m.user_id]);
+    unpaidUserNames.push(u ? u.name : m.id);
+  }
 
   const contributionsConfirmed = unpaidMembers.length === 0 && totalCollected >= targetAmount;
   const amountExact = totalCollected >= targetAmount;
 
   // Check 6: No duplicate payout exists for this cycle
-  const existingPayout = queryOne<Payout>(
+  const existingPayout = await queryOne<Payout>(
     `SELECT * FROM payouts WHERE cycle_id = ? AND status IN ('completed', 'processing')`,
     [cycleId]
   );
@@ -107,7 +105,7 @@ export function evaluatePayoutSafety(cycleId: string): PayoutSafetyCheckResult {
   );
 
   // Check 8: Approvals satisfied (e.g. check for any pending blocking decisions)
-  const pendingBlockingDecisions = queryAll(
+  const pendingBlockingDecisions = await queryAll(
     `SELECT * FROM agent_decisions WHERE circle_id = ? AND status = 'proposed' AND trigger_event IN ('EXTENSION_REQUEST', 'PAYMENT_DISPUTE')`,
     [cycle.circle_id]
   );
@@ -168,14 +166,14 @@ export interface ExtensionEvaluation {
   requiresOrganizerApproval: boolean;
 }
 
-export function evaluateExtensionRequest(params: {
+export async function evaluateExtensionRequest(params: {
   circleId: string;
   memberId: string;
   cycleId: string;
   requestedDate: string;
-}): ExtensionEvaluation {
-  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [params.circleId]);
-  const cycle = queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [params.cycleId]);
+}): Promise<ExtensionEvaluation> {
+  const policy = await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [params.circleId]);
+  const cycle = await queryOne<Cycle>(`SELECT * FROM cycles WHERE id = ?`, [params.cycleId]);
 
   if (!policy || !cycle) {
     return {
@@ -190,7 +188,7 @@ export function evaluateExtensionRequest(params: {
   }
 
   // Count past extensions
-  const pastDecisions = queryAll(
+  const pastDecisions = await queryAll(
     `SELECT * FROM agent_decisions WHERE circle_id = ? AND trigger_event = 'EXTENSION_REQUEST' AND status = 'executed' AND rationale LIKE ?`,
     [params.circleId, `%${params.memberId}%`]
   );
@@ -244,13 +242,13 @@ export interface SwapEvaluation {
   requiresDualConsent: boolean;
 }
 
-export function evaluateTurnSwap(params: {
+export async function evaluateTurnSwap(params: {
   circleId: string;
   memberAId: string;
   memberBId: string;
-}): SwapEvaluation {
-  const memberA = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ? AND circle_id = ?`, [params.memberAId, params.circleId]);
-  const memberB = queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ? AND circle_id = ?`, [params.memberBId, params.circleId]);
+}): Promise<SwapEvaluation> {
+  const memberA = await queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ? AND circle_id = ?`, [params.memberAId, params.circleId]);
+  const memberB = await queryOne<CircleMember>(`SELECT * FROM circle_members WHERE id = ? AND circle_id = ?`, [params.memberBId, params.circleId]);
 
   if (!memberA || !memberB) {
     return {
@@ -262,15 +260,15 @@ export function evaluateTurnSwap(params: {
     };
   }
 
-  const userA = queryOne<User>(`SELECT name FROM users WHERE id = ?`, [memberA.user_id]);
-  const userB = queryOne<User>(`SELECT name FROM users WHERE id = ?`, [memberB.user_id]);
+  const userA = await queryOne<User>(`SELECT name FROM users WHERE id = ?`, [memberA.user_id]);
+  const userB = await queryOne<User>(`SELECT name FROM users WHERE id = ?`, [memberB.user_id]);
 
   const nameA = userA?.name || 'Member A';
   const nameB = userB?.name || 'Member B';
 
   // Check if either turn has already been paid out
-  const cycleA = queryOne<Cycle>(`SELECT status FROM cycles WHERE circle_id = ? AND cycle_number = ?`, [params.circleId, memberA.turn_order]);
-  const cycleB = queryOne<Cycle>(`SELECT status FROM cycles WHERE circle_id = ? AND cycle_number = ?`, [params.circleId, memberB.turn_order]);
+  const cycleA = await queryOne<Cycle>(`SELECT status FROM cycles WHERE circle_id = ? AND cycle_number = ?`, [params.circleId, memberA.turn_order]);
+  const cycleB = await queryOne<Cycle>(`SELECT status FROM cycles WHERE circle_id = ? AND cycle_number = ?`, [params.circleId, memberB.turn_order]);
 
   if (cycleA?.status === 'paid_out') {
     return {

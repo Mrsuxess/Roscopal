@@ -236,7 +236,7 @@ export async function processAgentMessage(params: {
   const intent = classifyMessage(content);
 
   // 1. Fetch live contextual data from database
-  const user = queryOne<User>(`SELECT * FROM users WHERE id = ?`, [userId]) || {
+  const user = (await queryOne<User>(`SELECT * FROM users WHERE id = ?`, [userId])) || {
     id: userId,
     name: 'Member',
     email: 'member@roscopal.io',
@@ -245,13 +245,13 @@ export async function processAgentMessage(params: {
     location: 'Global'
   };
 
-  const circle = queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
-  const policy = queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
-  const currentCycle = queryOne<Cycle>(
+  const circle = await queryOne<Circle>(`SELECT * FROM circles WHERE id = ?`, [circleId]);
+  const policy = await queryOne<CirclePolicy>(`SELECT * FROM circle_policies WHERE circle_id = ?`, [circleId]);
+  const currentCycle = await queryOne<Cycle>(
     `SELECT * FROM cycles WHERE circle_id = ? AND cycle_number = ?`,
     [circleId, circle?.current_cycle_number || 1]
   );
-  const allCycles = queryAll<Cycle>(
+  const allCycles = await queryAll<Cycle>(
     `SELECT c.*, u.name as recipient_name 
      FROM cycles c 
      LEFT JOIN circle_members cm ON c.recipient_member_id = cm.id 
@@ -261,7 +261,7 @@ export async function processAgentMessage(params: {
     [circleId]
   );
 
-  const members = queryAll<any>(
+  const members = await queryAll<any>(
     `SELECT cm.*, u.name, u.email, u.paypal_email, u.location 
      FROM circle_members cm 
      JOIN users u ON cm.user_id = u.id 
@@ -274,7 +274,7 @@ export async function processAgentMessage(params: {
   const isOrganizer = circle ? circle.organizer_id === user.id : false;
 
   const cycleId = currentCycle?.id || '';
-  const contributions = queryAll<Contribution>(
+  const contributions = await queryAll<Contribution>(
     `SELECT * FROM contributions WHERE cycle_id = ? AND status = 'completed'`,
     [cycleId]
   );
@@ -308,7 +308,7 @@ export async function processAgentMessage(params: {
         };
       }
 
-      const safety = evaluatePayoutSafety(currentCycle.id);
+      const safety = await evaluatePayoutSafety(currentCycle.id);
       const remaining = Math.max(0, targetPot - collected);
 
       if (safety.allowed) {
@@ -477,7 +477,7 @@ Prospective members can click 'Join Circle' and enter code \`${code}\` to previe
       }
 
       const memberId = myMemberRecord?.id || userId;
-      const evaluation = evaluateExtensionRequest({
+      const evaluation = await evaluateExtensionRequest({
         circleId,
         memberId,
         cycleId: currentCycle?.id || 'cycle-1',
@@ -531,7 +531,7 @@ Click **Confirm Extension** below to register this extension on the ledger and n
         };
       }
 
-      const evaluation = evaluateTurnSwap({
+      const evaluation = await evaluateTurnSwap({
         circleId,
         memberAId: requesterId,
         memberBId: targetMember.id
@@ -578,7 +578,7 @@ Click **Confirm Extension** below to register this extension on the ledger and n
         };
       }
 
-      const pending = queryOne<Contribution>(
+      const pending = await queryOne<Contribution>(
         `SELECT * FROM contributions WHERE circle_id = ? AND member_id = ? AND status = 'pending'`,
         [circleId, myMemberRecord?.id || '']
       );

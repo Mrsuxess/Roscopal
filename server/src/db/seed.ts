@@ -5,20 +5,20 @@ export async function seedHeroDemoData(): Promise<void> {
   await initDatabase();
 
   // Clear existing demo data
-  execute(`DELETE FROM ledger_entries`);
-  execute(`DELETE FROM webhook_events`);
-  execute(`DELETE FROM reminders`);
-  execute(`DELETE FROM approvals`);
-  execute(`DELETE FROM agent_decisions`);
-  execute(`DELETE FROM messages`);
-  execute(`DELETE FROM payment_requests`);
-  execute(`DELETE FROM payouts`);
-  execute(`DELETE FROM contributions`);
-  execute(`DELETE FROM cycles`);
-  execute(`DELETE FROM circle_members`);
-  execute(`DELETE FROM circle_policies`);
-  execute(`DELETE FROM circles`);
-  execute(`DELETE FROM users`);
+  await execute(`DELETE FROM ledger_entries`);
+  await execute(`DELETE FROM webhook_events`);
+  await execute(`DELETE FROM reminders`);
+  await execute(`DELETE FROM approvals`);
+  await execute(`DELETE FROM agent_decisions`);
+  await execute(`DELETE FROM messages`);
+  await execute(`DELETE FROM payment_requests`);
+  await execute(`DELETE FROM payouts`);
+  await execute(`DELETE FROM contributions`);
+  await execute(`DELETE FROM cycles`);
+  await execute(`DELETE FROM circle_members`);
+  await execute(`DELETE FROM circle_policies`);
+  await execute(`DELETE FROM circles`);
+  await execute(`DELETE FROM users`);
 
   console.log('Seeding ROSCOPAL Hero Demo scenario...');
 
@@ -35,7 +35,7 @@ export async function seedHeroDemoData(): Promise<void> {
   ];
 
   for (const u of users) {
-    execute(
+    await execute(
       `INSERT INTO users (id, name, email, role, paypal_email, location, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [u.id, u.name, u.email, u.role, u.paypal_email, u.location, '2026-11-01T10:00:00.000Z']
     );
@@ -43,7 +43,7 @@ export async function seedHeroDemoData(): Promise<void> {
 
   // 2. Create Ada's Circle
   const circleId = 'circle-diaspora-8';
-  execute(
+  await execute(
     `INSERT INTO circles (id, name, tagline, organizer_id, status, current_cycle_number, created_at)
      VALUES (?, ?, ?, ?, 'active', 1, ?)`,
     [
@@ -56,7 +56,7 @@ export async function seedHeroDemoData(): Promise<void> {
   );
 
   // 3. Circle Policy
-  execute(
+  await execute(
     `INSERT INTO circle_policies (
       circle_id, currency, contribution_amount, cadence, start_date, total_cycles,
       members_count, order_rule, grace_days, payout_condition, shortfall_policy, max_extensions_per_member
@@ -65,7 +65,7 @@ export async function seedHeroDemoData(): Promise<void> {
   );
 
   // Record Genesis Block in Ledger
-  recordLedgerEntry({
+  await recordLedgerEntry({
     circleId,
     eventType: 'GENESIS',
     memberName: 'Adaeze Okonkwo',
@@ -84,7 +84,6 @@ export async function seedHeroDemoData(): Promise<void> {
   });
 
   // 4. Circle Members with turn allocations
-  // Ada is member #8, Chidi is member #1 (needed first pot for rent)
   const memberConfigs = [
     { id: 'mem-1', userId: 'usr-chidi', turn: 1 },
     { id: 'mem-2', userId: 'usr-amara', turn: 2 },
@@ -97,7 +96,7 @@ export async function seedHeroDemoData(): Promise<void> {
   ];
 
   for (const m of memberConfigs) {
-    execute(
+    await execute(
       `INSERT INTO circle_members (id, circle_id, user_id, turn_order, status, joined_at)
        VALUES (?, ?, ?, ?, 'active', ?)`,
       [m.id, circleId, m.userId, m.turn, '2026-11-01T10:10:00.000Z']
@@ -117,16 +116,14 @@ export async function seedHeroDemoData(): Promise<void> {
   ];
 
   for (const c of cycleDates) {
-    execute(
+    await execute(
       `INSERT INTO cycles (id, circle_id, cycle_number, recipient_member_id, due_date, payout_date, status, target_pot_amount, collected_amount, paid_out_amount)
        VALUES (?, ?, ?, ?, ?, ?, ?, 800, 0, 0)`,
       [`cycle-${c.num}`, circleId, c.num, c.recipientMem, c.due, c.payout, c.status]
     );
   }
 
-  // 6. Seed contributions for Cycle 1:
-  // 6 of the 8 members have already paid their $100 via PayPal Sandbox
-  // Chidi (recipient himself contributes his share too), Ada, Amara, Kwame, Zainab, Marcus
+  // 6. Seed contributions for Cycle 1
   const paidMembers = [
     { memId: 'mem-1', name: 'Chidi Anozie', ppOrder: 'ORDER-PP-098172', ppCap: 'CAP-998271', time: '2026-11-04T14:22:00.000Z' },
     { memId: 'mem-8', name: 'Adaeze Okonkwo', ppOrder: 'ORDER-PP-109283', ppCap: 'CAP-998272', time: '2026-11-04T15:10:00.000Z' },
@@ -139,13 +136,13 @@ export async function seedHeroDemoData(): Promise<void> {
   let collected = 0;
   for (const p of paidMembers) {
     const contrId = 'CONTR-' + p.ppCap;
-    execute(
+    await execute(
       `INSERT INTO contributions (id, circle_id, cycle_id, member_id, amount, currency, status, paypal_order_id, paypal_capture_id, payment_method, completed_at, created_at)
        VALUES (?, ?, 'cycle-1', ?, 100, 'USD', 'completed', ?, ?, 'paypal_sandbox', ?, ?)`,
       [contrId, circleId, p.memId, p.ppOrder, p.ppCap, p.time, p.time]
     );
 
-    recordLedgerEntry({
+    await recordLedgerEntry({
       circleId,
       eventType: 'CONTRIBUTION_RECEIVED',
       memberName: p.name,
@@ -164,17 +161,15 @@ export async function seedHeroDemoData(): Promise<void> {
     collected += 100;
   }
 
-  // Update cycle 1 collected amount
-  execute(`UPDATE cycles SET collected_amount = ? WHERE id = 'cycle-1'`, [collected]);
+  await execute(`UPDATE cycles SET collected_amount = ? WHERE id = 'cycle-1'`, [collected]);
 
-  // Fatima has requested an extension (pending scenario)
-  execute(
+  await execute(
     `INSERT INTO agent_decisions (id, circle_id, trigger_event, proposed_action, policy_check_result, status, rationale, created_at)
      VALUES (?, ?, 'EXTENSION_REQUEST', 'HOLD_POT_UNTIL_DEC_05', 'PASSED_GRACE_WINDOW', 'approved', 'Fatima requested +4 day extension to Dec 5. Within 5-day circle grace policy.', ?)`,
     ['DEC-FATIMA-EXT', circleId, '2026-11-05T18:00:00.000Z']
   );
 
-  recordLedgerEntry({
+  await recordLedgerEntry({
     circleId,
     eventType: 'EXTENSION_GRANTED',
     memberName: 'Fatima Bello',

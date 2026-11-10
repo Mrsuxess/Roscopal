@@ -119,7 +119,7 @@ export async function runAllScenarios(): Promise<ScenarioTestResult> {
   let unauthorizedPayoutsAllowed = 0;
 
   // Test 1: Payout when pot is incomplete ($600 / $800) -> MUST BE REJECTED
-  const incompleteSafety = evaluatePayoutSafety('cycle-1');
+  const incompleteSafety = await evaluatePayoutSafety('cycle-1');
   if (!incompleteSafety.allowed) {
     unauthorizedPayoutsBlocked++;
   } else {
@@ -127,7 +127,7 @@ export async function runAllScenarios(): Promise<ScenarioTestResult> {
   }
 
   // Test 2: Payout for nonexistent cycle -> MUST BE REJECTED
-  const invalidCycleSafety = evaluatePayoutSafety('non-existent-cycle-999');
+  const invalidCycleSafety = await evaluatePayoutSafety('non-existent-cycle-999');
   if (!invalidCycleSafety.allowed) {
     unauthorizedPayoutsBlocked++;
   } else {
@@ -135,7 +135,7 @@ export async function runAllScenarios(): Promise<ScenarioTestResult> {
   }
 
   // Test 3: Invalid extension (+15 days when grace is 5) -> MUST BE REJECTED
-  const excessiveExtension = evaluateExtensionRequest({
+  const excessiveExtension = await evaluateExtensionRequest({
     circleId: 'circle-diaspora-8',
     memberId: 'mem-5',
     cycleId: 'cycle-1',
@@ -147,8 +147,8 @@ export async function runAllScenarios(): Promise<ScenarioTestResult> {
 
   // Test 4: Turn swap when a turn is already paid_out -> MUST BE REJECTED
   // Simulate cycle 1 marked as paid_out temporarily
-  execute(`UPDATE cycles SET status = 'paid_out' WHERE id = 'cycle-1'`);
-  const invalidSwap = evaluateTurnSwap({
+  await execute(`UPDATE cycles SET status = 'paid_out' WHERE id = 'cycle-1'`);
+  const invalidSwap = await evaluateTurnSwap({
     circleId: 'circle-diaspora-8',
     memberAId: 'mem-1',
     memberBId: 'mem-4'
@@ -157,19 +157,19 @@ export async function runAllScenarios(): Promise<ScenarioTestResult> {
     unauthorizedPayoutsBlocked++;
   }
   // Revert
-  execute(`UPDATE cycles SET status = 'open' WHERE id = 'cycle-1'`);
+  await execute(`UPDATE cycles SET status = 'open' WHERE id = 'cycle-1'`);
 
   // Test 5: Duplicate Webhook Idempotency Handling
   let duplicateEventsHandled = 0;
   const duplicateEventId = 'WH-DUPLICATE-TEST-001';
-  execute(
+  await execute(
     `INSERT OR IGNORE INTO webhook_events (id, event_id, event_type, summary, payload_json, processed, created_at)
      VALUES (?, ?, 'PAYMENT.CAPTURE.COMPLETED', 'Test duplicate webhook', '{}', 1, ?)`,
     [duplicateEventId, duplicateEventId, new Date().toISOString()]
   );
   // Attempt duplicate insert
   try {
-    const existing = queryOne(`SELECT * FROM webhook_events WHERE event_id = ?`, [duplicateEventId]);
+    const existing = await queryOne(`SELECT * FROM webhook_events WHERE event_id = ?`, [duplicateEventId]);
     if (existing) {
       duplicateEventsHandled++; // Successfully detected and prevented double processing
     }
@@ -178,7 +178,7 @@ export async function runAllScenarios(): Promise<ScenarioTestResult> {
   }
 
   // Verify Ledger Hash Chain
-  const ledgerVerification = verifyLedgerIntegrity('circle-diaspora-8');
+  const ledgerVerification = await verifyLedgerIntegrity('circle-diaspora-8');
 
   const durationMs = Date.now() - startTime;
   const totalScenarios = testCases.length;
