@@ -5,6 +5,8 @@
 > Built with **PayPal Sandbox**, **AG Grid**, **TypeScript**, and **Deterministic Financial Rules**.
 
 ---
+<img width="1358" height="690" alt="image" src="https://github.com/user-attachments/assets/38f828dc-12ff-44e9-882c-1b4205ae6415" />
+link: https://roscopal.suxess.workers.dev/
 
 ## 1. Executive Summary
 
